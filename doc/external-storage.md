@@ -70,8 +70,12 @@ and choose a mode:
   Drive roots cannot be deleted, renamed or moved through file operations; edit
   their names or remove the connection in settings instead.
 
-Add providers, enter connection details, **Test connections**, then **Save storage
-settings**. These controls save independently of the general site settings.
+Select **Add provider**, choose a protocol, then **Continue** to open its connection
+form. Configured storages appear in a compact list with their protocol and
+encryption status; select **Edit** to open one form at a time. Drafts survive
+switching editors and are marked **Unsaved changes** until saved. Enter connection
+details, **Test connections**, then **Save storage settings**. These controls save
+independently of the general site settings.
 Saving checks connections and initializes new encrypted roots. Removing or
 switching a connection never migrates or deletes its data. Use copy/move to
 transfer files between local and external drives. Do not configure overlapping
