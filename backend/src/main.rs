@@ -10,7 +10,7 @@ use entity::{copy_move_task::CopyMoveTask, site::Site};
 use lazy_static::lazy_static;
 use rocket::fs::FileServer;
 use service::app_state::AppState;
-use service::fairings::StaticFileCache;
+use service::fairings::{DatabaseGate, StaticFileCache};
 use std::sync::Mutex;
 use std::{sync::Arc, thread, time};
 use util::{init, local_ip, rocket_env::RocketEnv};
@@ -46,11 +46,13 @@ async fn launch() -> Result<(), anyhow::Error> {
         storage::config::StorageConfig::load(&state.pool, &state.get_secret()?).await?;
     state.set_storage_config(storage_config)?;
     state.start_upload_reaper();
+    state.backups.start_reaper();
     let config = ServerConfig::new()?;
     RocketEnv::setup(&config);
 
     let rocket = rocket::build()
         .manage(state)
+        .attach(DatabaseGate)
         .attach(StaticFileCache)
         .mount("/api", api::serve())
         .mount("/", service::static_route::serve())

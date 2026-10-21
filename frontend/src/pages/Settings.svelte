@@ -5,6 +5,7 @@
   import Spinner from "../components/Spinner.svelte";
   import Button from "../components/Button.svelte";
   import StorageSettings from "../sections/StorageSettings.svelte";
+  import DatabaseSettings from "../sections/DatabaseSettings.svelte";
   import DirBrowser from "../sections/DirBrowser.svelte";
   import * as api from "../utils/api";
   import {
@@ -268,6 +269,7 @@
     </div>
   </form>
   <StorageSettings onSaved={(config) => { mainExternalActive = config.enabled && config.mode === "main"; }} />
+  <DatabaseSettings />
 </div>
 
 <style>

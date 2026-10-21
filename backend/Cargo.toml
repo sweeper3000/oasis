@@ -8,6 +8,9 @@ rust-version = "1.85"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+argon2 = "0.5"
+bip39 = { version = "2.2", features = ["zeroize"] }
+zeroize = "1"
 aead = { version = "0.5", features = ["stream"] }
 aes-gcm = "0.10"
 aes-siv = "0.7"

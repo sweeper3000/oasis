@@ -319,7 +319,7 @@ impl StorageConfig {
     }
 }
 
-fn settings_key(secret: &str) -> [u8; 32] {
+pub(crate) fn settings_key(secret: &str) -> [u8; 32] {
     Sha256::digest(&[b"oasis-storage-settings-v1".as_ref(), secret.as_bytes()].concat())
         .as_slice()
         .try_into()

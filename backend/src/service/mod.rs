@@ -1,4 +1,5 @@
 pub mod app_state;
+pub mod backup;
 pub mod auth;
 pub mod fairings;
 pub mod migrate_dir;

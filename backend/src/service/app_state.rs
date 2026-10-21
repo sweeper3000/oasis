@@ -3,10 +3,13 @@ use anyhow::Result as AnyResult;
 use sqlx::{pool::PoolConnection, Pool, Sqlite};
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex, MutexGuard};
 
+#[derive(Clone)]
 pub struct AppState {
-    pub storage: Mutex<crate::storage::config::StorageConfig>,
-    pub storage_settings_lock: tokio::sync::Mutex<()>,
-    pub first_run: AtomicBool,
+    pub operations: Arc<tokio::sync::RwLock<()>>,
+    pub backups: Arc<crate::service::backup::BackupManager>,
+    pub storage: Arc<Mutex<crate::storage::config::StorageConfig>>,
+    pub storage_settings_lock: Arc<tokio::sync::Mutex<()>>,
+    pub first_run: Arc<AtomicBool>,
     pub site: Arc<Mutex<Site>>,
     pub pool: Pool<Sqlite>,
     pub uploads: Arc<Mutex<Vec<UploadTask>>>,
@@ -21,9 +24,11 @@ impl AppState {
         };
 
         Self {
-            storage: Mutex::new(crate::storage::config::StorageConfig::default()),
-            storage_settings_lock: tokio::sync::Mutex::new(()),
-            first_run: AtomicBool::new(first_run),
+            operations: Arc::new(tokio::sync::RwLock::new(())),
+            backups: Arc::new(crate::service::backup::BackupManager::default()),
+            storage: Arc::new(Mutex::new(crate::storage::config::StorageConfig::default())),
+            storage_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
+            first_run: Arc::new(AtomicBool::new(first_run)),
             site: Arc::new(Mutex::new(site)),
             pool,
             uploads: Arc::new(Mutex::new(vec![])),

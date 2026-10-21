@@ -59,6 +59,15 @@ node build.js
 - File external link
 - I18n (English, Chinese)
 - External storage: S3, SFTP, FTPS, FTP, WebDAV and SMB, with optional AES-256 encryption
+- Password-verified, encrypted database backup and restore with a 12-word recovery phrase
+
+### Database backup and migration
+
+Use **Settings → Database backup and restore** to migrate accounts, settings,
+visibility rules, and saved provider connections. Local files must be copied
+separately; Oasis discovers files directly without registering them through uploads.
+See [database backup and restore](doc/database-backups.md) for recovery phrases,
+import behavior, and migration steps.
 
 ### External storage
 
