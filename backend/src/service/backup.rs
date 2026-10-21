@@ -496,6 +496,7 @@ pub async fn restore(
     );
     let workspace = state.backups.ready_workspace(&id, uid)?;
     let mut backup = read_snapshot(&workspace).await?;
+    backup.storage.prepare_keys(false).await?;
     backup.destination(&local)?;
     let secret = util::generate_secret_key(32);
     let sealed = crypto::seal(

@@ -1,9 +1,24 @@
 use super::{crypto, remote::Remote, validate_name};
 use anyhow::{ensure, Result};
+use rand::{rngs::OsRng, RngCore};
 use rocket::serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
 use std::collections::HashSet;
+use zeroize::Zeroizing;
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(crate = "rocket::serde", deny_unknown_fields)]
+pub struct KeyDerivation {
+    pub version: u8,
+    pub salt: [u8; 16],
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedKey {
+    source: [u8; 32],
+    key: Zeroizing<[u8; 32]>,
+}
 
 #[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(crate = "rocket::serde", rename_all = "snake_case")]
@@ -57,6 +72,10 @@ pub struct Provider {
     pub encryption: bool,
     pub encryption_key: String,
     pub key_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_derivation: Option<KeyDerivation>,
+    #[serde(skip)]
+    pub(crate) prepared_key: Option<PreparedKey>,
     pub password_set: bool,
     pub secret_access_key_set: bool,
     pub session_token_set: bool,
@@ -86,6 +105,8 @@ impl Default for Provider {
             encryption: false,
             encryption_key: String::new(),
             key_fingerprint: String::new(),
+            key_derivation: None,
+            prepared_key: None,
             password_set: false,
             secret_access_key_set: false,
             session_token_set: false,
@@ -95,13 +116,104 @@ impl Default for Provider {
 }
 
 impl Provider {
+    fn secret(&self) -> Zeroizing<String> {
+        Zeroizing::new(
+            std::env::var("OASIS_STORAGE_KEY").unwrap_or_else(|_| self.encryption_key.clone()),
+        )
+    }
+
+    fn validate_secret(value: &str) -> Result<()> {
+        ensure!(
+            value.len() <= 1024,
+            "Encryption secret must be at most 1,024 UTF-8 bytes"
+        );
+        if crypto::parse_key(value).is_err() {
+            ensure!(value.chars().count() >= 12 && !value.trim().is_empty(),
+                "Encryption passphrase must contain at least 12 characters, or use a 64-character hexadecimal key");
+        }
+        Ok(())
+    }
+
+    async fn prepare_key(&mut self, recover: bool) -> Result<()> {
+        if !self.encryption {
+            return Ok(());
+        }
+        let value = self.secret();
+        Self::validate_secret(&value)?;
+        if crypto::parse_key(&value).is_ok() {
+            ensure!(
+                self.key_derivation.is_none(),
+                "Restore the original encryption passphrase"
+            );
+            self.key()?;
+            return Ok(());
+        }
+        if self.key_derivation.is_none() {
+            ensure!(recover, "Missing passphrase derivation metadata; reconnect this provider in storage settings");
+            self.key_derivation = match Remote::new(self.clone()).await?.read_namespace().await? {
+                Some(marker) => Some(
+                    marker
+                        .derivation()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "This storage uses a raw hexadecimal key; restore its original key"
+                            )
+                        })?
+                        .clone(),
+                ),
+                None => {
+                    let mut salt = [0; 16];
+                    OsRng.fill_bytes(&mut salt);
+                    Some(KeyDerivation { version: 1, salt })
+                }
+            };
+        }
+        let derivation = self.key_derivation.as_ref().unwrap();
+        ensure!(
+            derivation.version == 1,
+            "Unsupported storage key derivation version"
+        );
+        let salt = derivation.salt;
+        let source = Sha256::digest(value.as_bytes()).into();
+        let key = tokio::task::spawn_blocking(move || -> Result<Zeroizing<[u8; 32]>> {
+            use argon2::{Algorithm, Argon2, Params, Version};
+            let params = Params::new(65536, 3, 1, Some(32))
+                .map_err(|_| anyhow::anyhow!("Invalid derivation parameters"))?;
+            let mut key = Zeroizing::new([0; 32]);
+            Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+                .hash_password_into(value.as_bytes(), &salt, &mut *key)
+                .map_err(|_| anyhow::anyhow!("Could not derive storage key"))?;
+            Ok(key)
+        })
+        .await??;
+        self.prepared_key = Some(PreparedKey { source, key });
+        self.key()?;
+        Ok(())
+    }
+
     pub fn key(&self) -> Result<Option<[u8; 32]>> {
         if !self.encryption {
             return Ok(None);
         }
-        let value =
-            std::env::var("OASIS_STORAGE_KEY").unwrap_or_else(|_| self.encryption_key.clone());
-        let key = crypto::parse_key(&value)?;
+        let value = self.secret();
+        Self::validate_secret(&value)?;
+        let key = if let Ok(key) = crypto::parse_key(&value) {
+            ensure!(
+                self.key_derivation.is_none(),
+                "Restore the original encryption passphrase"
+            );
+            key
+        } else {
+            let prepared = self
+                .prepared_key
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Encryption passphrase has not been prepared"))?;
+            ensure!(
+                prepared.source == <[u8; 32]>::from(Sha256::digest(value.as_bytes())),
+                "Encryption secret changed; restore the original secret"
+            );
+            *prepared.key
+        };
         ensure!(self.key_fingerprint.is_empty() || self.key_fingerprint == crypto::fingerprint(&key),
             "Encryption key changed. Restore the original key; changing it makes existing files unreadable");
         Ok(Some(key))
@@ -122,6 +234,8 @@ impl StorageConfig {
             provider.session_token.clear();
             provider.encryption_key.clear();
             provider.key_fingerprint.clear();
+            provider.key_derivation = None;
+            provider.prepared_key = None;
         }
         config
     }
@@ -130,6 +244,8 @@ impl StorageConfig {
         for provider in &mut self.providers {
             // Fingerprints supplied by clients must never bypass key-change checks.
             provider.key_fingerprint.clear();
+            provider.key_derivation = None;
+            provider.prepared_key = None;
             if let Some(old) = previous.providers.iter().find(|p| p.id == provider.id) {
                 if provider.password.is_empty() {
                     provider.password = old.password.clone();
@@ -150,6 +266,7 @@ impl StorageConfig {
                     && provider.root == old.root
                 {
                     provider.key_fingerprint = old.key_fingerprint.clone();
+                    provider.key_derivation = old.key_derivation.clone();
                 }
             }
         }
@@ -236,7 +353,25 @@ impl StorageConfig {
             if self.enabled
                 && (self.mode == StorageMode::Mount || provider.id == self.main_provider)
             {
-                if let Some(key) = provider.key()? {
+                if provider.encryption {
+                    Provider::validate_secret(&provider.secret())?;
+                }
+                if provider.encryption
+                    && provider
+                        .key_derivation
+                        .as_ref()
+                        .map(|k| k.version != 1)
+                        .unwrap_or(false)
+                {
+                    anyhow::bail!("Unsupported storage key derivation version");
+                }
+                // Preparation is asynchronous. Structural validation runs first;
+                // the same validation runs again with a prepared passphrase key.
+                if provider.encryption
+                    && (crypto::parse_key(&provider.secret()).is_ok()
+                        || provider.prepared_key.is_some())
+                {
+                    let key = provider.key()?.unwrap();
                     provider.key_fingerprint = crypto::fingerprint(&key);
                 }
             }
@@ -293,18 +428,35 @@ impl StorageConfig {
         Ok(())
     }
 
+    pub async fn prepare_keys(&mut self, recover: bool) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let mode = &self.mode;
+        let main = &self.main_provider;
+        for provider in self
+            .providers
+            .iter_mut()
+            .filter(|p| *mode == StorageMode::Mount || p.id == *main)
+        {
+            provider.prepare_key(recover).await?;
+        }
+        Ok(())
+    }
+
     pub async fn load(pool: &Pool<Sqlite>, secret: &str) -> Result<Self> {
         let row: Option<(String,)> =
             sqlx::query_as("SELECT sealed_config FROM storage_config WHERE id = 1")
                 .fetch_optional(pool)
                 .await?;
-        match row {
-            None => Ok(Self::default()),
-            Some((sealed,)) => Ok(serde_json::from_slice(&crypto::unseal(
-                &settings_key(secret),
-                &sealed,
-            )?)?),
-        }
+        let mut config: Self = match row {
+            None => Self::default(),
+            Some((sealed,)) => {
+                serde_json::from_slice(&crypto::unseal(&settings_key(secret), &sealed)?)?
+            }
+        };
+        config.prepare_keys(false).await?;
+        Ok(config)
     }
 
     pub async fn save(&self, pool: &Pool<Sqlite>, secret: &str) -> Result<()> {
@@ -348,6 +500,62 @@ mod tests {
             }],
             ..StorageConfig::default()
         }
+    }
+
+    #[tokio::test]
+    async fn passphrases_preserve_bytes_validate_limits_and_never_serialize_cached_keys() {
+        for invalid in [
+            "",
+            "short",
+            "            ",
+            &"x".repeat(1025),
+            &"界".repeat(342),
+        ] {
+            assert!(Provider::validate_secret(invalid).is_err());
+        }
+        for value in [
+            "Twelve chars!",
+            "  spaces matter  ",
+            "日本語の暗号化パスフレーズ",
+            &"A7".repeat(32),
+        ] {
+            assert!(Provider::validate_secret(value).is_ok());
+        }
+        let mut p = config().providers.remove(0);
+        p.encryption_key = "a7".repeat(32);
+        assert!(!serde_json::to_string(&p)
+            .unwrap()
+            .contains("key_derivation"));
+        let lower = p.key().unwrap().unwrap();
+        p.encryption_key = p.encryption_key.to_uppercase();
+        assert_eq!(p.key().unwrap().unwrap(), lower);
+        p.encryption_key = "A long passphrase 日本語!".into();
+        p.key_derivation = Some(KeyDerivation {
+            version: 1,
+            salt: [5; 16],
+        });
+        p.prepare_key(false).await.unwrap();
+        let key = p.key().unwrap().unwrap();
+        p.key_fingerprint = crypto::fingerprint(&key);
+        let mut other = p.clone();
+        other.key_fingerprint.clear();
+        other.key_derivation.as_mut().unwrap().salt[0] ^= 1;
+        other.prepare_key(false).await.unwrap();
+        assert_ne!(other.key().unwrap().unwrap(), key);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("prepared_key") && !json.contains("source"));
+        let mut restored: Provider = serde_json::from_str(&json).unwrap();
+        assert!(restored.key().is_err());
+        restored.prepare_key(false).await.unwrap();
+        assert_eq!(restored.key().unwrap().unwrap(), key);
+        restored.encryption_key.push(' ');
+        assert!(restored.key().is_err());
+        assert!(restored.prepare_key(false).await.is_err());
+        restored.key_derivation.as_mut().unwrap().version = 2;
+        assert!(restored.prepare_key(false).await.is_err());
+        p.key_derivation = None;
+        p.prepared_key = None;
+        assert!(p.prepare_key(false).await.is_err());
     }
 
     #[test]

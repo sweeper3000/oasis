@@ -13,10 +13,10 @@ services:
       - "${OASIS_BIND_ADDRESS:-127.0.0.1}:${OASIS_PORT:-8000}:8000"
     # Optional: uncomment environment and the entries you need.
     # environment:
-      # Global encryption key: set 64 hex characters in .env or your shell first.
+      # Global encryption secret: use a 12+ character passphrase or 64 hex characters.
       # Leave this entry commented to use keys saved in Oasis settings.
       # Back up this key. Changing it makes existing encrypted files unreadable.
-      # OASIS_STORAGE_KEY: "${OASIS_STORAGE_KEY:?Set a 64-character hexadecimal key}"
+      # OASIS_STORAGE_KEY: "${OASIS_STORAGE_KEY:?Set an encryption passphrase or hexadecimal key}"
       # Private CA: also uncomment the secrets mount below.
       # OASIS_STORAGE_CA_CERT: /run/oasis-secrets/ca.pem
     volumes:

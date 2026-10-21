@@ -34,8 +34,9 @@ def port():
         return listener.getsockname()[1]
 
 
-def wait_port(number, process=None):
-    for _ in range(100):
+def wait_port(number, process=None, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if process and process.poll() is not None:
             raise RuntimeError("Test server exited before accepting connections")
         try:
@@ -128,6 +129,8 @@ class Harness:
         (remote / "plain").mkdir()
         number = port()
         provider = {"id": protocol, "name": protocol.upper(), "protocol": protocol, "root": "encrypted", "host": "127.0.0.1", "port": number, "username": "tester", "password": "remote-test-password", "endpoint": "", "encryption": True, "encryption_key": hashlib.sha256(protocol.encode()).hexdigest()}
+        if getattr(self.args, "passphrase", False):
+            provider["encryption_key"] = "  Oasis test phrase 日本語!  "
         server_type = "ftp" if protocol == "ftps" else protocol
         flags = ["--addr", "127.0.0.1:%s" % number, "--dir-cache-time", "0s", "--user", "tester", "--pass", "remote-test-password", "--cache-dir", str(self.root / "rclone-cache")]
         if protocol == "webdav":
@@ -372,7 +375,8 @@ class Harness:
         self.app.terminate()
         self.app.wait(timeout=10)
         self.app = self.start([str(self.executable)], "oasis-restarted")
-        wait_port(self.number, self.app)
+        # Debug Argon2id plus concurrent Docker compilation can exceed ten seconds.
+        wait_port(self.number, self.app, timeout=120)
         self.login()
         assert self.json("GET", "/sys/storage")["enabled"]
         self.upload("", "restart.bin", b"survived restart")
@@ -410,6 +414,7 @@ def main():
     parser.add_argument("--protocols", default="webdav,ftp,ftps,sftp,s3")
     parser.add_argument("--test-python-path", type=Path, help="Optional directory containing pyftpdlib and pyOpenSSL")
     parser.add_argument("--smb", action="store_true")
+    parser.add_argument("--passphrase", action="store_true", help="Exercise Argon2id passphrase encryption instead of legacy hex keys")
     parser.add_argument("--keep-alive", action="store_true")
     args = parser.parse_args()
     args.rclone = args.rclone.resolve()

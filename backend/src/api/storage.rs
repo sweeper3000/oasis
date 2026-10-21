@@ -57,6 +57,10 @@ async fn update_storage(
             "Wait for uploads and copy/move operations to finish before changing storage"
         )));
     }
+    config.prepare_keys(true).await.map_err(invalid)?;
+    config
+        .validate(&state.get_site().map_err(invalid)?.storage)
+        .map_err(invalid)?;
     config.check_connections(false).await.map_err(invalid)?;
     config.check_connections(true).await.map_err(invalid)?;
     config
@@ -74,9 +78,14 @@ async fn test_storage(
     _admin: AuthAdmin,
     body: Json<StorageConfig>,
 ) -> Result<(), ConfigError> {
+    let _lock = state.storage_settings_lock.lock().await;
     let mut config = body.into_inner();
     config.merge_secrets(&state.get_storage_config().map_err(invalid)?);
     config.enabled = true;
+    config
+        .validate(&state.get_site().map_err(invalid)?.storage)
+        .map_err(invalid)?;
+    config.prepare_keys(true).await.map_err(invalid)?;
     config
         .validate(&state.get_site().map_err(invalid)?.storage)
         .map_err(invalid)?;

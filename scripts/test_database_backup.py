@@ -161,7 +161,7 @@ def run(source, target, root):
     target.app.terminate()
     target.app.wait(timeout=10)
     target.app = target.start([str(target.executable)], "target-restarted")
-    wait_port(target.number, target.app)
+    wait_port(target.number, target.app, timeout=120)
     target.login()
     assert target.file("WEBDAV/external.txt")[0] == b"encrypted provider survives migration"
     target.cleaned()
@@ -174,6 +174,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", type=Path, required=True)
     parser.add_argument("--oasis", type=Path, default=REPO / "backend/target/debug/oasis")
+    parser.add_argument("--passphrase", action="store_true", help="Migrate passphrase-encrypted storage")
     parser.add_argument("--keep-alive", action="store_true")
     parser.add_argument("--test-python-path", type=Path)
     args = parser.parse_args()

@@ -4,11 +4,71 @@ use super::{
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use rocket::serde::Deserialize;
+use rocket::serde::Serialize;
 use std::{collections::BTreeMap, path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command};
 
 pub const NAMESPACE: &str = ".oasis-storage-v1";
 pub const DIR_MARKER: &str = ".oasis-dir";
+
+#[derive(Deserialize, Serialize)]
+#[serde(crate = "rocket::serde", deny_unknown_fields)]
+pub struct PassphraseNamespace {
+    version: u8,
+    derivation: super::config::KeyDerivation,
+    verification: String,
+}
+
+pub enum Namespace {
+    Legacy(String),
+    Passphrase(PassphraseNamespace),
+}
+impl Namespace {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        ensure!(bytes.len() <= 16384, "Invalid storage namespace marker");
+        if bytes.first() == Some(&b'{') {
+            let marker: PassphraseNamespace = serde_json::from_slice(bytes)
+                .map_err(|_| anyhow!("Invalid storage namespace marker"))?;
+            ensure!(
+                marker.version == 2 && marker.derivation.version == 1,
+                "Unsupported storage namespace version"
+            );
+            Ok(Self::Passphrase(marker))
+        } else {
+            Ok(Self::Legacy(String::from_utf8(bytes.to_vec())?))
+        }
+    }
+    pub fn derivation(&self) -> Option<&super::config::KeyDerivation> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Passphrase(m) => Some(&m.derivation),
+        }
+    }
+    fn verify(&self, provider: &Provider, key: &[u8; 32]) -> Result<()> {
+        let (sealed, expected): (&str, &[u8]) = match self {
+            Self::Legacy(sealed) => {
+                ensure!(
+                    provider.key_derivation.is_none(),
+                    "This storage requires its original hexadecimal key"
+                );
+                (sealed, b"oasis-encrypted-namespace-v1")
+            }
+            Self::Passphrase(m) => {
+                ensure!(
+                    provider.key_derivation.as_ref() == Some(&m.derivation),
+                    "Incorrect encryption secret or derivation metadata"
+                );
+                (&m.verification, b"oasis-encrypted-namespace-v2")
+            }
+        };
+        ensure!(
+            crypto::unseal(key, sealed).map_err(|_| anyhow!("Incorrect encryption secret"))?
+                == expected,
+            "Incorrect encryption secret"
+        );
+        Ok(())
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(crate = "rocket::serde", rename_all = "PascalCase")]
@@ -173,7 +233,11 @@ impl Remote {
 
     pub fn path(&self, relative: &str) -> Result<String> {
         let mut parts = vec![];
-        let key = self.provider.key()?;
+        let key = if relative.trim_matches('/').is_empty() {
+            None
+        } else {
+            self.provider.key()?
+        };
         for part in relative.split('/').filter(|p| !p.is_empty()) {
             validate_name(part)?;
             parts.push(match key {
@@ -268,29 +332,24 @@ impl Remote {
         let has_marker = entries.iter().any(|e| e.name == NAMESPACE);
         if let Some(key) = self.provider.key()? {
             if has_marker {
-                let workspace = Workspace::new()?;
-                let path = workspace.path().join("marker");
-                let remote = append(&root, NAMESPACE);
-                self.run(&[
-                    "copyto",
-                    &remote,
-                    path.to_str()
-                        .ok_or_else(|| anyhow!("Invalid staging path"))?,
-                    "--ignore-times",
-                ])
-                .await?;
-                let marker = tokio::fs::read_to_string(&path).await?;
-                ensure!(
-                    crypto::unseal(&key, &marker)? == b"oasis-encrypted-namespace-v1",
-                    "Incorrect encryption key"
-                );
+                self.read_namespace()
+                    .await?
+                    .ok_or_else(|| anyhow!("Storage namespace disappeared"))?
+                    .verify(&self.provider, &key)?;
             } else {
                 ensure!(entries.is_empty(), "Encryption requires an empty dedicated provider root. Existing files are never encrypted in place");
                 if initialize {
                     let workspace = Workspace::new()?;
                     let path = workspace.path().join("marker");
-                    tokio::fs::write(&path, crypto::seal(&key, b"oasis-encrypted-namespace-v1")?)
-                        .await?;
+                    let marker = match &self.provider.key_derivation {
+                        Some(derivation) => serde_json::to_vec(&PassphraseNamespace {
+                            version: 2,
+                            derivation: derivation.clone(),
+                            verification: crypto::seal(&key, b"oasis-encrypted-namespace-v2")?,
+                        })?,
+                        None => crypto::seal(&key, b"oasis-encrypted-namespace-v1")?.into_bytes(),
+                    };
+                    tokio::fs::write(&path, marker).await?;
                     let remote = append(&root, NAMESPACE);
                     self.upload_to(&path, &remote).await?;
                 }
@@ -299,6 +358,27 @@ impl Remote {
             ensure!(!has_marker, "This root contains encrypted Oasis storage. Restore its original encryption key and enable encryption");
         }
         Ok(())
+    }
+
+    pub async fn read_namespace(&self) -> Result<Option<Namespace>> {
+        let root = self.path("")?;
+        let entries: Vec<Entry> = serde_json::from_slice(
+            &self
+                .run(&["lsjson", &root, "--no-modtime", "--no-mimetype"])
+                .await?,
+        )?;
+        if let Some(entry) = entries.iter().find(|e| e.name == NAMESPACE) {
+            ensure!(
+                !entry.is_dir && (0..=16384).contains(&entry.size),
+                "Invalid storage namespace marker"
+            );
+            let bytes = self
+                .run(&["cat", &append(&root, NAMESPACE), "--head", "16385"])
+                .await?;
+            Ok(Some(Namespace::parse(&bytes)?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn mkdir(&self, relative: &str) -> Result<()> {
@@ -395,6 +475,36 @@ fn append(parent: &str, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn namespace_versions_authenticate_keys_and_derivation_metadata() {
+        let key = [23; 32];
+        let mut provider = Provider::default();
+        let sealed = crypto::seal(&key, b"oasis-encrypted-namespace-v1").unwrap();
+        Namespace::parse(sealed.as_bytes())
+            .unwrap()
+            .verify(&provider, &key)
+            .unwrap();
+        let derivation = super::super::config::KeyDerivation {
+            version: 1,
+            salt: [8; 16],
+        };
+        provider.key_derivation = Some(derivation.clone());
+        let mut marker = PassphraseNamespace {
+            version: 2,
+            derivation,
+            verification: crypto::seal(&key, b"oasis-encrypted-namespace-v2").unwrap(),
+        };
+        let parsed = Namespace::parse(&serde_json::to_vec(&marker).unwrap()).unwrap();
+        parsed.verify(&provider, &key).unwrap();
+        assert!(parsed.verify(&provider, &[24; 32]).is_err());
+        provider.key_derivation.as_mut().unwrap().salt[0] ^= 1;
+        assert!(parsed.verify(&provider, &key).is_err());
+        marker.version = 3;
+        assert!(Namespace::parse(&serde_json::to_vec(&marker).unwrap()).is_err());
+        assert!(Namespace::parse(b"{bad").is_err());
+        assert!(Namespace::parse(&vec![0; 16385]).is_err());
+    }
 
     #[test]
     fn upload_verification_requires_a_file_with_the_exact_known_size() {

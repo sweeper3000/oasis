@@ -42,7 +42,7 @@ copies of concurrent transfers. `docker compose -f compose.example.yaml down` ke
 these volumes; adding `--volumes` deletes them, including settings and local files.
 
 Optionally copy `.env.example` to `.env` to change the host port or bind address,
-or set `OASIS_STORAGE_KEY` to a securely generated 64-character hexadecimal key
+or set `OASIS_STORAGE_KEY` to a strong passphrase of at least 12 characters or a securely generated 64-character hexadecimal key
 and uncomment its environment entry in Compose. Leave that entry commented to
 use provider keys saved in Settings. Keep the key stable and back it up
 separately. The default host binding is loopback; set
@@ -98,7 +98,11 @@ from users and excluded from archives. Provider-side quotas still apply.
 ## Encryption and recovery
 
 Enable encryption for an **empty, dedicated remote root**. Supply a random
-256-bit key as 64 hexadecimal characters in settings or `OASIS_STORAGE_KEY`.
+256-bit key as 64 hexadecimal characters, or a passphrase of at least 12 Unicode
+characters (up to 1,024 UTF-8 bytes), in settings or `OASIS_STORAGE_KEY`.
+Passphrases preserve case and all spaces exactly; whitespace-only values are
+rejected. Exactly 64 hexadecimal characters always mean a raw key and remain
+case-insensitive, preserving compatibility with existing encrypted files.
 The environment value takes precedence for every encrypted provider. For example:
 
 ```sh
@@ -113,6 +117,16 @@ Oasis to another empty encrypted provider with its new key, verifying the copy,
 and then removing the old data. A global environment key must be unset to use
 different saved keys for this migration. Existing plaintext data is never silently
 encrypted in place.
+
+Passphrases derive a 256-bit key using Argon2id v1.3 (64 MiB, three iterations,
+one lane) with a fresh random 128-bit salt per provider namespace. The public
+salt and derivation version are retained in the saved configuration and the
+namespace marker; keep the marker when moving or reconnecting storage. The
+marker also authenticates the derived key. Keys are prepared asynchronously
+and cached only in memory, so normal file operations do not repeat Argon2id.
+Encrypted database exports include the derivation metadata; environment secrets
+must still be moved separately. Older Oasis versions cannot read new
+passphrase-encrypted namespaces. Existing hexadecimal-key namespaces are unchanged.
 
 Contents use versioned AES-256-GCM STREAM framing with independently derived
 per-file keys (HKDF-SHA-256 with a random 256-bit salt), authenticated length,
@@ -188,3 +202,11 @@ cross-drive transfers, deletion, staging cleanup, key-change guards, main-drive
 operation without local storage, and settings persistence across restart. It also
 injects destination metadata failures to confirm rejected uploads and retained
 move sources, and checks that verification never downloads file contents.
+
+Passphrase-specific recovery tests:
+
+```sh
+python3 scripts/test_storage_passphrases.py --rclone /absolute/path/to/rclone
+python3 scripts/test_external_storage.py --rclone /absolute/path/to/rclone --protocols webdav --passphrase
+python3 scripts/test_database_backup.py --rclone /absolute/path/to/rclone --passphrase
+```

@@ -233,7 +233,7 @@
               <label class="block mt-4"><input type="checkbox" bind:checked={provider.encryption} /> {label("encryption")}</label>
               {#if provider.encryption}
                 <label class="block mt-3">{label("encryption_key")}
-                  <input type="password" autocomplete="new-password" pattern="[a-fA-F0-9]{64}" maxlength="64"
+                  <input type="password" autocomplete="new-password" minlength="12" maxlength="1024"
                     placeholder={provider.encryption_key_set ? label("stored_secret") : label("key_placeholder")}
                     bind:value={provider.encryption_key} class="block w-full border rounded p-2" />
                 </label>
