@@ -149,7 +149,7 @@ export type ContextMenuAction =
   | "move"
   | "download";
 
-export type StorageProtocol = "s3" | "sftp" | "ftps" | "ftp" | "webdav" | "smb";
+export type StorageProtocol = "s3" | "b2" | "sftp" | "ftps" | "ftp" | "webdav" | "smb";
 export interface IStorageProvider {
   id: string;
   name: string;

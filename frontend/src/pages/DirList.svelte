@@ -10,7 +10,6 @@
     resetTitle,
     clickStore,
     userStore,
-    siteStore,
   } from "../utils/store";
   import type {
     ContextMenuAction,
@@ -39,7 +38,6 @@
   const user = $userStore;
   let dirs = $dirsStore;
   let files: Array<IFile> = $filesStore;
-  let storage = $siteStore.storage;
   let order: IFileOrder = { key: "name", asc: true };
   let isLoading = false;
   let fileSelector: HTMLInputElement;
@@ -76,15 +74,10 @@
     }
   });
 
-  const unsubscribeStorage = siteStore.subscribe(
-    (site) => (storage = site.storage)
-  );
-
   onDestroy(() => {
     unsubscribeDirs();
     unsubscribeFiles();
     unsubscribeClick();
-    unsubscribeStorage();
   });
 
   $: if (dirs.length >= 1) {
@@ -310,14 +303,14 @@
 {#if showContextMenu}
   <ContextMenu pos={contextPos} {onContextAction} {contextFile} />
 {/if}
-{#if showDirBrowser && storage}
+{#if showDirBrowser}
   <DirBrowser
     onClose={() => (showDirBrowser = false)}
     onSelect={(v) => {
-      targetDir = v.replace(storage, "");
+      targetDir = v;
       showCopyFileModal = true;
     }}
-    root={storage}
+    mode="storage"
   />
 {/if}
 {#if showPromptModal}

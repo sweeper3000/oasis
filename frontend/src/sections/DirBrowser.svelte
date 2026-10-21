@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { t } from "svelte-i18n";
   import Button from "../components/Button.svelte";
+  import type { IFile } from "../utils/types";
+  import { EFileType } from "../utils/enums";
   import Spinner from "../components/Spinner.svelte";
   import * as api from "../utils/api";
   import { setNotification } from "../utils/store";
@@ -9,15 +11,20 @@
   export let onClose = () => {};
   export let onSelect = (v: string) => {};
   export let root = "";
+  export let mode: "system" | "storage" = "system";
   let volumes: string[] = [];
   let path: string[] = null;
   let sub_dirs: string[] = [];
   let selectedVolume = "";
   let currentDir = "";
   let isLoading = false;
+  let selectionValid = false;
+  let failed = false;
+  let disposed = false;
+  onDestroy(() => { disposed = true; });
 
   onMount(() => {
-    if (!root) {
+    if (mode === "system" && !root) {
       fetchVolumes();
     }
   });
@@ -26,7 +33,7 @@
     selectedVolume = volumes[0];
   }
 
-  $: if (selectedVolume || root) {
+  $: if (mode === "storage" || selectedVolume || root) {
     path = [];
   }
 
@@ -49,27 +56,28 @@
 
   const fetchSubDirs = async (dir: string) => {
     const currentPath = path;
-    isLoading = true;
+    isLoading = true; selectionValid = false; failed = false; sub_dirs = [];
     try {
-      const endpoint = "/api/sys/dirs/" + encodeURIComponent(dir);
-      // Tricky part is, on Windows, the result may be `C:Windows`
-      // if the special character has been cleaned up in the volume name.
-      const sub_dirs_res: Array<string> = await api.get(endpoint);
-      if (currentPath === path) {
-        sub_dirs_res.sort();
-        sub_dirs = sub_dirs_res
-          .map((s) => formatDir(s))
-          .filter((s) => s[0] !== "." && s[0] !== "$");
+      let names: string[];
+      if (mode === "storage") {
+        const entries: IFile[] = await api.get("/api/dir" + (dir ? "?path=" + encodeURIComponent(dir) : ""));
+        names = entries.filter(entry => entry.file_type === EFileType.Dir).map(entry => entry.filename);
+      } else {
+        const entries: string[] = await api.get("/api/sys/dirs/" + encodeURIComponent(dir));
+        names = entries.map(formatDir).filter(name => name && name[0] !== "." && name[0] !== "$");
+      }
+      if (!disposed && currentPath === path) {
+        sub_dirs = names.sort((a, b) => a.localeCompare(b));
+        selectionValid = true;
       }
     } catch (e) {
-      console.error(e);
-      setNotification("error", $t("message.error.read_dir_error"));
-      if (currentPath === path && path.length > 0) {
-        path = path.slice(0, -1);
+      if (!disposed && currentPath === path) {
+        failed = true;
+        setNotification("error", $t("message.error.read_dir_error"));
       }
+    } finally {
+      if (!disposed && currentPath === path) isLoading = false;
     }
-
-    isLoading = false;
   };
 
   const selectVolume = (e: any) => {
@@ -90,6 +98,7 @@
   // For Windows, it looks like `C:/Windows/System` or `C:\\Windows\\System.
   // And volume names may vary from `/` to `/run/media/user/Toshiba`.
   const buildFullPath = () => {
+    if (mode === "storage") return path.join("/");
     let fullPath = root || selectedVolume;
 
     for (let pathComponent of path) {
@@ -133,9 +142,9 @@
     </div>
     <!-- Volume selector -->
     <div class="mb-4 flex flex-row items-center">
-      {#if root}
+      {#if mode === "storage" || root}
         <span class="mr-4">{$t("component.dir_browser.root_dir")}</span>
-        <span class="text-gray-700 font-bold break-words mb-2">{root}</span>
+        <span class="text-gray-700 font-bold break-words mb-2">{mode === "storage" ? "/" : root}</span>
       {:else}
         <span class="mr-4">{$t("component.dir_browser.volumes")}:</span>
         <select
@@ -155,7 +164,7 @@
 
     <!-- Selected directory -->
     <div class="mt-2">{$t("component.dir_browser.selected_dir")}:</div>
-    <div class="text-gray-700 font-bold break-words mb-2">{currentDir}</div>
+    <div class="text-gray-700 font-bold break-words mb-2">{mode === "storage" ? "/" + currentDir : currentDir}</div>
 
     <!-- Sub directory list -->
     <div
@@ -164,22 +173,23 @@
       {#if isLoading}
         <Spinner />
       {:else}
+        {#if failed}<p role="alert" class="mx-2 text-red-700">{$t("message.error.read_dir_error")}</p>{/if}
         {#if path && path.length > 0}
-          <div
-            class="mx-2 px-2 rounded hover:bg-gray-200 cursor-pointer break-words"
+          <button type="button"
+            class="block text-left mx-2 px-2 rounded hover:bg-gray-200 cursor-pointer break-words"
             on:click={goToParentDir}
           >
             ..
-          </div>
+          </button>
         {/if}
 
         {#each sub_dirs as dir}
-          <div
-            class="mx-2 px-2 rounded hover:bg-gray-200 cursor-pointer break-words"
+          <button type="button"
+            class="block text-left mx-2 px-2 rounded hover:bg-gray-200 cursor-pointer break-words"
             on:click={() => selectDir(dir)}
           >
             {dir}
-          </div>
+          </button>
         {/each}
       {/if}
     </div>
@@ -189,7 +199,7 @@
       <Button
         value={$t("button.confirm")}
         className="mr-4"
-        disabled={!currentDir}
+        disabled={isLoading || !selectionValid || (mode === "system" && !currentDir)}
         onClick={() => {
           onSelect(currentDir);
           onClose();

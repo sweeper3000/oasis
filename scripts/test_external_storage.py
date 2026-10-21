@@ -131,6 +131,14 @@ class Harness:
         provider = {"id": protocol, "name": protocol.upper(), "protocol": protocol, "root": "encrypted", "host": "127.0.0.1", "port": number, "username": "tester", "password": "remote-test-password", "endpoint": "", "encryption": True, "encryption_key": hashlib.sha256(protocol.encode()).hexdigest()}
         if getattr(self.args, "passphrase", False):
             provider["encryption_key"] = "  Oasis test phrase 日本語!  "
+        if protocol == "b2":
+            (remote / "test-bucket" / "encrypted").mkdir(parents=True)
+            (remote / "test-bucket" / "plain").mkdir()
+            provider.update(root="test-bucket/encrypted", endpoint="http://127.0.0.1:%s" % number,
+                            access_key_id="test-access-key", secret_access_key="test-secret-key", username="", password="")
+            process = self.start([sys.executable, str(REPO / "scripts/test_storage_b2_server.py"), str(remote), str(number)], protocol)
+            wait_port(number, process)
+            return provider, remote / "test-bucket" / "encrypted"
         server_type = "ftp" if protocol == "ftps" else protocol
         flags = ["--addr", "127.0.0.1:%s" % number, "--dir-cache-time", "0s", "--user", "tester", "--pass", "remote-test-password", "--cache-dir", str(self.root / "rclone-cache")]
         if protocol == "webdav":

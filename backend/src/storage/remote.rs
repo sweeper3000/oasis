@@ -161,6 +161,7 @@ impl Remote {
         let mut env = BTreeMap::new();
         let backend = match provider.protocol {
             Protocol::S3 => "s3",
+            Protocol::B2 => "b2",
             Protocol::Sftp => "sftp",
             Protocol::Ftps | Protocol::Ftp => "ftp",
             Protocol::Webdav => "webdav",
@@ -168,6 +169,14 @@ impl Remote {
         };
         env.insert("TYPE".into(), backend.into());
         match provider.protocol {
+            Protocol::B2 => {
+                env.insert("ACCOUNT".into(), provider.access_key_id.clone());
+                env.insert("KEY".into(), provider.secret_access_key.clone());
+                env.insert("HARD_DELETE".into(), "true".into());
+                if !provider.endpoint.is_empty() {
+                    env.insert("ENDPOINT".into(), provider.endpoint.clone());
+                }
+            }
             Protocol::S3 => {
                 env.insert(
                     "PROVIDER".into(),
@@ -261,6 +270,10 @@ impl Remote {
     }
 
     pub async fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
+        self.run_command(args, false).await
+    }
+
+    async fn run_command(&self, args: &[&str], allow_missing: bool) -> Result<Vec<u8>> {
         let mut cmd = command();
         cmd.args(args).args([
             "--config",
@@ -292,10 +305,43 @@ impl Remote {
             .context("External storage operation timed out")?
             .context("Install rclone 1.71+ or set OASIS_RCLONE to its executable")?;
         if !output.status.success() {
+            if allow_missing && matches!(output.status.code(), Some(3 | 4)) {
+                return Ok(Vec::new());
+            }
             // Remote stderr can include credentials/URLs. Never expose or log it.
-            bail!("External provider '{}' failed {} (exit {}). Check connection, permissions, host keys and TLS certificates", self.provider.name, args[0], output.status.code().unwrap_or(-1));
+            let detail = safe_provider_error(&output.stderr);
+            bail!(
+                "External provider '{}' failed {} (exit {}). {}",
+                self.provider.name,
+                args[0],
+                output.status.code().unwrap_or(-1),
+                detail
+            );
         }
         Ok(output.stdout)
+    }
+
+    pub async fn remove(&self, relative: &str, directory: bool) -> Result<()> {
+        let path = self.path(relative)?;
+        let native_b2 = self.provider.protocol == Protocol::B2;
+        let command = if directory {
+            if native_b2 {
+                "delete"
+            } else {
+                "purge"
+            }
+        } else {
+            "deletefile"
+        };
+        self.run(&[command, &path]).await?;
+        if native_b2 {
+            // Hard deletion can reveal an earlier version. Hide that version
+            // without deleting its history; never use B2 purge/cleanup here.
+            let mut soft = self.clone();
+            soft.env.insert("HARD_DELETE".into(), "false".into());
+            soft.run_command(&[command, &path], true).await?;
+        }
+        Ok(())
     }
 
     pub async fn list(&self, relative: &str) -> Result<Vec<Entry>> {
@@ -383,7 +429,11 @@ impl Remote {
 
     pub async fn mkdir(&self, relative: &str) -> Result<()> {
         let path = self.path(relative)?;
-        self.run(&["mkdir", &path]).await?;
+        // B2 directories are virtual; our marker retains them. Calling mkdir
+        // would unnecessarily request bucket creation with unrestricted keys.
+        if self.provider.protocol != Protocol::B2 {
+            self.run(&["mkdir", &path]).await?;
+        }
         // A tiny marker retains empty directories on object stores such as S3.
         let workspace = Workspace::new()?;
         let marker = workspace.path().join("marker");
@@ -436,6 +486,30 @@ impl Remote {
             .context("Upload verification failed: could not read destination metadata")?;
         verify_uploaded_metadata(&metadata, expected_size)
     }
+}
+
+// Only return server-owned text for explicitly recognized codes. Raw stderr can
+// contain credentials, object names, signed URLs, or arbitrary provider content.
+fn safe_provider_error(stderr: &[u8]) -> &'static str {
+    let bytes = &stderr[stderr.len().saturating_sub(32768)..];
+    let value = String::from_utf8_lossy(bytes);
+    for (code, message) in [
+        ("unauthorized", "Provider returned unauthorized: check application-key permissions and bucket restrictions."),
+        ("bad_auth_token", "Provider returned bad_auth_token: check the application credentials."),
+        ("expired_auth_token", "Provider returned expired_auth_token: retry the operation."),
+        ("cap_exceeded", "Provider returned cap_exceeded: check the account storage or transaction caps."),
+        ("AccessDenied", "Provider returned AccessDenied: check bucket and object permissions."),
+        ("InvalidAccessKeyId", "Provider returned InvalidAccessKeyId: check the access-key ID."),
+        ("SignatureDoesNotMatch", "Provider returned SignatureDoesNotMatch: check the credentials, region and endpoint."),
+        ("NoSuchBucket", "Provider returned NoSuchBucket: select an existing bucket."),
+        ("bad_bucket_id", "Provider returned bad_bucket_id: select an accessible existing bucket."),
+    ] {
+        let b2 = regex::Regex::new(&format!(r"\([45][0-9]{{2}} {}\)", code)).unwrap();
+        if value.contains(&format!("api error {}:", code)) || value.contains(&format!("<Code>{}</Code>", code)) || b2.is_match(&value) {
+            return message;
+        }
+    }
+    "Check connection, permissions, host keys and TLS certificates."
 }
 
 use std::convert::TryInto;
@@ -537,6 +611,7 @@ mod tests {
     async fn maps_all_protocols_and_preserves_absolute_sftp_roots() {
         for protocol in [
             Protocol::S3,
+            Protocol::B2,
             Protocol::Sftp,
             Protocol::Ftps,
             Protocol::Ftp,
@@ -551,6 +626,7 @@ mod tests {
             let remote = Remote::new(provider).await.unwrap();
             let expected = match protocol {
                 Protocol::S3 => "s3",
+                Protocol::B2 => "b2",
                 Protocol::Sftp => "sftp",
                 Protocol::Ftp | Protocol::Ftps => "ftp",
                 Protocol::Webdav => "webdav",
@@ -569,6 +645,32 @@ mod tests {
                 assert_eq!(remote.env["EXPLICIT_TLS"], "true");
                 assert_eq!(remote.env["NO_CHECK_CERTIFICATE"], "false");
             }
+            if protocol == Protocol::B2 {
+                assert_eq!(remote.env["HARD_DELETE"], "true");
+                assert!(!remote.env.contains_key("REGION"));
+                assert!(!remote.env.contains_key("SESSION_TOKEN"));
+            }
         }
+    }
+
+    #[test]
+    fn provider_errors_only_expose_allowlisted_codes() {
+        for input in [
+            "https://secret:password@provider.invalid/secret?token=secret (403 unauthorized)",
+            "api error AccessDenied: secret credential and signed URL",
+            "<Code>InvalidAccessKeyId</Code><Secret>must never appear</Secret>",
+        ] {
+            let message = safe_provider_error(input.as_bytes());
+            assert!(
+                !message.contains("password")
+                    && !message.contains("signed URL")
+                    && !message.contains("must never appear")
+            );
+            assert!(message.starts_with("Provider returned"));
+        }
+        assert_eq!(
+            safe_provider_error(b"unrecognized raw secret AccessDenied"),
+            "Check connection, permissions, host keys and TLS certificates."
+        );
     }
 }

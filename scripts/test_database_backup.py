@@ -76,7 +76,8 @@ def run(source, target, root):
     target_link = target.api("POST", "/file/share", {"path": "destination.txt", "expire": int(time.time()) + 600})[0].decode()
     old_target_cookie = "; ".join(c.name + "=" + c.value for c in target.cookies)
     source_cookie = "; ".join(c.name + "=" + c.value for c in source.cookies)
-    provider, _ = source.provider("webdav")
+    provider, _ = source.provider(source.args.storage_protocol)
+    drive = provider["name"]
     source.json("PUT", "/sys/storage", {"enabled": True, "mode": "mount", "main_provider": provider["id"], "providers": [provider]})
     source.upload(provider["name"], "external.txt", b"encrypted provider survives migration")
     source_db = source.appdir / "data/db/main.db"
@@ -148,9 +149,11 @@ def run(source, target, root):
     assert config["name"] == "Backup source" and config["storage"] == str(target.local)
     assert target.file("copied.txt")[0] == b"already on disk: copied.txt"
     assert target.file("destination.txt")[0] == b"destination file must remain untouched"
-    assert target.file("WEBDAV/external.txt")[0] == b"encrypted provider survives migration"
+    assert target.file(drive + "/external.txt")[0] == b"encrypted provider survives migration"
     saved = target.json("GET", "/sys/storage")["providers"][0]
-    assert saved["password_set"] and saved["encryption_key_set"] and not saved["password"] and not saved["encryption_key"]
+    credential = "secret_access_key" if source.args.storage_protocol == "b2" else "password"
+    assert saved[credential + "_set"] and saved["encryption_key_set"] and not saved[credential] and not saved["encryption_key"]
+    assert saved["protocol"] == source.args.storage_protocol
     guest = client(target)
     guest.api("GET", "/login/guest")
     assert "private.txt" not in {entry["filename"] for entry in guest.listing()}
@@ -163,7 +166,7 @@ def run(source, target, root):
     target.app = target.start([str(target.executable)], "target-restarted")
     wait_port(target.number, target.app, timeout=120)
     target.login()
-    assert target.file("WEBDAV/external.txt")[0] == b"encrypted provider survives migration"
+    assert target.file(drive + "/external.txt")[0] == b"encrypted provider survives migration"
     target.cleaned()
     (root / "export.oasis-backup").write_bytes(archive)
     (root / "recovery-phrase.txt").write_text(phrase + "\n")
@@ -174,6 +177,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", type=Path, required=True)
     parser.add_argument("--oasis", type=Path, default=REPO / "backend/target/debug/oasis")
+    parser.add_argument("--storage-protocol", choices=["webdav", "b2"], default="webdav")
     parser.add_argument("--passphrase", action="store_true", help="Migrate passphrase-encrypted storage")
     parser.add_argument("--keep-alive", action="store_true")
     parser.add_argument("--test-python-path", type=Path)

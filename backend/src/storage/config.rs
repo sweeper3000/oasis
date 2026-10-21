@@ -32,6 +32,7 @@ pub enum StorageMode {
 #[serde(crate = "rocket::serde", rename_all = "snake_case")]
 pub enum Protocol {
     S3,
+    B2,
     Sftp,
     Ftps,
     Ftp,
@@ -116,6 +117,28 @@ impl Default for Provider {
 }
 
 impl Provider {
+    fn backblaze_s3(&self) -> bool {
+        self.protocol == Protocol::S3
+            && rocket::http::uri::Absolute::parse(&self.endpoint)
+                .ok()
+                .and_then(|url| url.authority().map(|a| a.host().to_ascii_lowercase()))
+                .map(|host| host.starts_with("s3.") && host.ends_with(".backblazeb2.com"))
+                .unwrap_or(false)
+    }
+
+    fn b2_namespace(&self) -> bool {
+        self.protocol == Protocol::B2 || self.backblaze_s3()
+    }
+
+    fn same_namespace(&self, old: &Self) -> bool {
+        self.root.trim_matches('/') == old.root.trim_matches('/')
+            && ((self.b2_namespace() && old.b2_namespace())
+                || (self.protocol == old.protocol
+                    && self.host == old.host
+                    && self.endpoint == old.endpoint
+                    && self.port == old.port))
+    }
+
     fn secret(&self) -> Zeroizing<String> {
         Zeroizing::new(
             std::env::var("OASIS_STORAGE_KEY").unwrap_or_else(|_| self.encryption_key.clone()),
@@ -260,14 +283,25 @@ impl StorageConfig {
                     provider.encryption_key = old.encryption_key.clone();
                 }
                 // Prevent accidental environment/settings key changes for this namespace.
-                if provider.protocol == old.protocol
-                    && provider.host == old.host
-                    && provider.endpoint == old.endpoint
-                    && provider.root == old.root
-                {
+                if provider.same_namespace(old) {
                     provider.key_fingerprint = old.key_fingerprint.clone();
                     provider.key_derivation = old.key_derivation.clone();
                 }
+                if provider.protocol == Protocol::B2
+                    && old.protocol == Protocol::S3
+                    && provider.endpoint == old.endpoint
+                {
+                    provider.endpoint.clear();
+                }
+            }
+            if provider.protocol == Protocol::B2 {
+                if provider.endpoint.starts_with("https://s3.")
+                    && provider.endpoint.contains(".backblazeb2.com")
+                {
+                    provider.endpoint.clear();
+                }
+                provider.region.clear();
+                provider.session_token.clear();
             }
         }
     }
@@ -323,6 +357,23 @@ impl StorageConfig {
                 "Password cannot contain a newline"
             );
             match provider.protocol {
+                Protocol::B2 => {
+                    ensure!(
+                        !provider.root.trim_matches('/').is_empty(),
+                        "B2 root must include an existing bucket"
+                    );
+                    ensure!(
+                        !provider.access_key_id.is_empty()
+                            && !provider.secret_access_key.is_empty(),
+                        "B2 Application Key ID and Application Key are required"
+                    );
+                    ensure!(
+                        provider.endpoint.is_empty()
+                            || provider.endpoint.starts_with("https://")
+                            || provider.endpoint.starts_with("http://"),
+                        "B2 API endpoint must be an HTTP(S) URL"
+                    );
+                }
                 Protocol::S3 => {
                     ensure!(
                         !provider.root.trim_matches('/').is_empty(),
@@ -378,12 +429,14 @@ impl StorageConfig {
         }
         for (index, provider) in self.providers.iter().enumerate() {
             for other in &self.providers[index + 1..] {
-                let same_server = provider.protocol == other.protocol
-                    && provider.host.eq_ignore_ascii_case(&other.host)
-                    && provider.port == other.port
-                    && provider.endpoint.trim_end_matches('/')
-                        == other.endpoint.trim_end_matches('/')
-                    && (provider.protocol == Protocol::S3 || provider.username == other.username);
+                let same_server = (provider.b2_namespace() && other.b2_namespace())
+                    || (provider.protocol == other.protocol
+                        && provider.host.eq_ignore_ascii_case(&other.host)
+                        && provider.port == other.port
+                        && provider.endpoint.trim_end_matches('/')
+                            == other.endpoint.trim_end_matches('/')
+                        && (provider.protocol == Protocol::S3
+                            || provider.username == other.username));
                 let root = provider.root.trim_matches('/');
                 let other_root = other.root.trim_matches('/');
                 if same_server {
@@ -483,6 +536,48 @@ use std::convert::TryInto;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_b2_conversion_preserves_secrets_keys_and_rejects_alias_overlap() {
+        let local = tempfile::tempdir().unwrap();
+        let mut old = config();
+        old.providers[0].endpoint = "https://s3.ca-east-006.backblazeb2.com".into();
+        old.providers[0].access_key_id = "application-key-id".into();
+        old.providers[0].encryption_key = "old passphrase with spaces".into();
+        old.providers[0].key_derivation = Some(KeyDerivation {
+            version: 1,
+            salt: [19; 16],
+        });
+        old.prepare_keys(false).await.unwrap();
+        old.validate(local.path().to_str().unwrap()).unwrap();
+        let key = old.providers[0].key().unwrap().unwrap();
+        let mut updated = old.redacted();
+        updated.providers[0].protocol = Protocol::B2;
+        updated.merge_secrets(&old);
+        assert!(updated.providers[0].endpoint.is_empty());
+        assert!(updated.providers[0].region.is_empty());
+        assert_eq!(
+            updated.providers[0].secret_access_key,
+            old.providers[0].secret_access_key
+        );
+        assert_eq!(
+            updated.providers[0].key_fingerprint,
+            old.providers[0].key_fingerprint
+        );
+        assert!(updated.providers[0].key_derivation == old.providers[0].key_derivation);
+        updated.prepare_keys(false).await.unwrap();
+        assert_eq!(updated.providers[0].key().unwrap().unwrap(), key);
+        let mut alias = old.providers[0].clone();
+        alias.id = "alias".into();
+        alias.name = "Alias".into();
+        alias.root += "/nested";
+        updated.providers.push(alias);
+        assert!(updated.validate(local.path().to_str().unwrap()).is_err());
+        updated.providers[1].root = "other-bucket".into();
+        updated.validate(local.path().to_str().unwrap()).unwrap();
+        updated.providers[0].secret_access_key.clear();
+        assert!(updated.validate(local.path().to_str().unwrap()).is_err());
+    }
 
     fn config() -> StorageConfig {
         StorageConfig {

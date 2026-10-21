@@ -1,6 +1,6 @@
 # External storage
 
-Oasis can use S3-compatible buckets, SFTP, FTPS, FTP, WebDAV and SMB without OS
+Oasis can use S3-compatible buckets, native Backblaze B2, SFTP, FTPS, FTP, WebDAV and SMB without OS
 mounts. The browser always talks to Oasis; credentials stay on the server.
 Provider changes are read on each operation, including files added by other
 clients to unencrypted storage. This is direct storage access, not a background
@@ -84,6 +84,7 @@ remote roots as separate drives.
 | Protocol | Connection details |
 | --- | --- |
 | S3 | `bucket/optional-prefix`, region, access key and secret; optional session token. Leave credentials blank for the server AWS credential chain. Set the endpoint for S3-compatible services. |
+| Backblaze B2 | Native B2 API; `bucket/optional-prefix`, Application Key ID and Application Key. Endpoints are discovered automatically; no S3 region or endpoint is needed. |
 | SFTP | Host, optional port (default 22), username and password or server-side SSH private key path/agent. A trusted server-side `known_hosts` file is required. Roots beginning with `/` are absolute; other roots are relative to the remote account. |
 | FTPS | Host, username/password, optional port. Explicit TLS is the default (21); implicit TLS defaults to 990. Trust the server certificate or configure a CA bundle. |
 | FTP | Host, optional port (21), username/password. **Insecure:** credentials and traffic are unencrypted. Prefer SFTP or FTPS. File encryption does not protect FTP credentials. |
@@ -92,8 +93,37 @@ remote roots as separate drives.
 
 Use dedicated roots with listing, reading, writing and deletion permissions. Oasis
 uses portable file names and does not follow local symbolic links. It
-preserves empty S3 folders using `.oasis-dir` markers. These markers are hidden
+preserves empty S3 and B2 folders using `.oasis-dir` markers. These markers are hidden
 from users and excluded from archives. Provider-side quotas still apply.
+
+## Backblaze B2
+
+Choose **Backblaze B2** to use rclone's native B2 backend. Use an Application Key
+with list, read, write and delete access to the existing bucket and chosen prefix.
+The Application Key ID and Application Key are distinct from the Oasis encryption
+secret. Ordinary setup needs no endpoint, region, or session token. The existing
+`endpoint` API field may specify a native B2 API authorization endpoint for tests
+or advanced deployments; it is not an S3 endpoint and is not shown in the form.
+
+To switch an existing Backblaze S3 connection, edit it and choose **Backblaze B2**.
+Keep its bucket/prefix and original encryption secret. Saved application credentials
+and encryption metadata are retained for the same namespace; S3 connection settings
+are discarded. Saving verifies existing markers without rewriting encrypted files.
+Do not configure the same bucket/prefix through both protocols simultaneously.
+
+Deleting or moving a file permanently removes its current B2 version. If an older
+version becomes visible, Oasis hides it so deleted files do not reappear. Historical
+versions and hide markers remain under your B2 lifecycle rules. Folder deletion
+uses current-object deletion rather than B2 purge, which would destroy history.
+Oasis does not create buckets, change lifecycle rules, or clean up historical versions.
+
+**Test connections** verifies read/list access. Saving new encrypted storage also
+requires write access to upload its namespace marker. Recognized provider errors
+such as `unauthorized` are shown without exposing raw logs, credentials, or signed URLs.
+
+Move/copy destination selection browses the Oasis virtual root (`/`), so local
+folders and external drives appear together. Setup, local-folder settings, and
+database restore continue to browse physical server directories.
 
 ## Encryption and recovery
 
@@ -210,3 +240,16 @@ python3 scripts/test_storage_passphrases.py --rclone /absolute/path/to/rclone
 python3 scripts/test_external_storage.py --rclone /absolute/path/to/rclone --protocols webdav --passphrase
 python3 scripts/test_database_backup.py --rclone /absolute/path/to/rclone --passphrase
 ```
+
+Native B2 tests use a local API fixture and real rclone, without production keys:
+
+```sh
+python3 scripts/test_external_storage.py --rclone /absolute/path/to/rclone --protocols b2 --passphrase
+python3 scripts/test_storage_b2.py --rclone /absolute/path/to/rclone
+python3 scripts/test_database_backup.py --rclone /absolute/path/to/rclone --storage-protocol b2 --passphrase
+```
+
+Add `--keep-alive` to the native conversion test for Safari validation. The fixture
+checks protocol conversion, preserved encryption markers, write failures, history
+retention and deletion, and rejects bucket-management operations. A real-account
+smoke test is still needed before relying on a particular Backblaze deployment.

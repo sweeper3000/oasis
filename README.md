@@ -58,7 +58,7 @@ node build.js
 - Media file play list
 - File external link
 - I18n (English, Chinese)
-- External storage: S3, SFTP, FTPS, FTP, WebDAV and SMB, with optional AES-256 encryption
+- External storage: S3, native Backblaze B2, SFTP, FTPS, FTP, WebDAV and SMB, with optional AES-256 encryption
 - Password-verified, encrypted database backup and restore with a 12-word recovery phrase
 
 ### Database backup and migration

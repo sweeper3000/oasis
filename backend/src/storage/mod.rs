@@ -365,12 +365,7 @@ impl Storage {
             }
             Target::Remote(provider, relative) => {
                 let remote = Remote::new(provider).await?;
-                remote
-                    .run(&[
-                        if meta.is_dir { "purge" } else { "deletefile" },
-                        &remote.path(&relative)?,
-                    ])
-                    .await?;
+                remote.remove(&relative, meta.is_dir).await?;
             }
         }
         Ok(())

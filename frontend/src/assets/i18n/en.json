@@ -90,6 +90,10 @@
       "request_failed": "Database operation failed. Check your administrator session and try again."
     },
     "external_storage": {
+      "b2": "Backblaze B2",
+      "b2_key_id": "Application Key ID",
+      "b2_application_key": "Application Key",
+      "b2_help": "Uses the native Backblaze B2 API. Select an existing bucket and optional prefix; endpoints are discovered automatically. Deletes permanently remove the current file version. Older overwritten versions follow your B2 lifecycle rules.",
       "title": "External storage",
       "local_storage": "Local storage",
       "local_inactive": "Not used for regular files while an external main drive is active.",

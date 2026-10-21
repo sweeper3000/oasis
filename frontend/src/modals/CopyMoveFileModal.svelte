@@ -109,7 +109,7 @@
       <div>
         {$t(`modal.copy_move.${mode}`)}<b>{source.filename}</b>{$t(
           `modal.copy_move.to`
-        )}<b>{target}</b>
+        )}<b>{target || "/"}</b>
       </div>
       <div>
         {$t("modal.copy_move.progress")}<b>{(progress * 100).toFixed(2)}%</b>

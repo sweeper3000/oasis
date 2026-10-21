@@ -14,8 +14,14 @@
   let choosingProtocol = false;
   let newProtocol: StorageProtocol | "" = "";
   let savedProviders: Record<string, string> = {};
-  const protocols: StorageProtocol[] = ["s3", "sftp", "ftps", "ftp", "webdav", "smb"];
+  const protocols: StorageProtocol[] = ["s3", "b2", "sftp", "ftps", "ftp", "webdav", "smb"];
   const label = (key: string) => $t(`component.external_storage.${key}`);
+  const protocolName = (protocol: StorageProtocol) => protocol === "b2" ? label("b2") : protocol.toUpperCase();
+  const changeProtocol = (provider: IStorageProvider) => {
+    if (provider.protocol === "b2") {
+      provider.endpoint = ""; provider.region = ""; provider.session_token = "";
+    }
+  };
 
   async function request(method: string, suffix = "", body?: IStorageConfig) {
     const response = await fetch(`/api/sys/storage${suffix}`, {
@@ -77,8 +83,12 @@
   };
 
   type FieldKey = "host" | "username" | "password" | "endpoint" | "region" | "access_key_id" | "secret_access_key" | "session_token" | "key_file" | "known_hosts_file" | "domain";
-  type Field = { key: FieldKey; secret?: boolean; required?: boolean };
+  type Field = { key: FieldKey; secret?: boolean; required?: boolean; label?: string };
   const fields = (provider: IStorageProvider): Field[] => {
+    if (provider.protocol === "b2") return [
+      { key: "access_key_id", label: "b2_key_id", required: true },
+      { key: "secret_access_key", label: "b2_application_key", secret: true, required: !provider.secret_access_key_set },
+    ];
     if (provider.protocol === "s3") return [
       { key: "endpoint" }, { key: "region" }, { key: "access_key_id" },
       { key: "secret_access_key", secret: true }, { key: "session_token", secret: true },
@@ -163,7 +173,7 @@
                   <div class="min-w-0">
                     <p class="font-bold break-words">{provider.name || label("unnamed")}</p>
                     <p class="text-sm text-gray-600">
-                      {provider.protocol.toUpperCase()} · {label(provider.encryption ? "encrypted" : "unencrypted")}
+                      {protocolName(provider.protocol)} · {label(provider.encryption ? "encrypted" : "unencrypted")}
                       {#if isUnsaved(provider)}<span class="text-yellow-800"> · {label("unsaved")}</span>{/if}
                     </p>
                   </div>
@@ -182,7 +192,7 @@
               <label for="new-storage-protocol" class="block mb-2">{label("protocol")}</label>
               <select id="new-storage-protocol" bind:value={newProtocol} class="w-full border rounded p-2 mb-3">
                 <option value="" disabled>{label("select_protocol")}</option>
-                {#each protocols as protocol}<option value={protocol}>{protocol.toUpperCase()}</option>{/each}
+                {#each protocols as protocol}<option value={protocol}>{protocolName(protocol)}</option>{/each}
               </select>
               <div class="flex gap-3">
                 <button type="button" disabled={!newProtocol} class="border rounded px-3 py-2 disabled:opacity-50" on:click={addProvider}>{label("continue")}</button>
@@ -198,28 +208,29 @@
                   <input required maxlength="100" bind:value={provider.name} class="block w-full border rounded p-2" />
                 </label>
                 <label class="block">{label("protocol")}
-                  <select bind:value={provider.protocol} class="block w-full border rounded p-2">
-                    {#each protocols as protocol}<option value={protocol}>{protocol.toUpperCase()}</option>{/each}
+                  <select bind:value={provider.protocol} on:change={() => changeProtocol(provider)} on:blur class="block w-full border rounded p-2">
+                    {#each protocols as protocol}<option value={protocol}>{protocolName(protocol)}</option>{/each}
                   </select>
                 </label>
-                <label class="block md:col-span-2">{label(provider.protocol === "s3" ? "bucket_root" : "root")}
-                  <input required={provider.protocol === "s3" || provider.protocol === "smb"} bind:value={provider.root} class="block w-full border rounded p-2" />
+                <label class="block md:col-span-2">{label(provider.protocol === "s3" || provider.protocol === "b2" ? "bucket_root" : "root")}
+                  <input required={provider.protocol === "s3" || provider.protocol === "b2" || provider.protocol === "smb"} bind:value={provider.root} class="block w-full border rounded p-2" />
                 </label>
                 {#each fields(provider) as field}
-                  <label class="block">{label(field.key)}
+                  <label class="block">{label(field.label || field.key)}
                     <input type={field.secret ? "password" : "text"} required={field.required || false}
                       autocomplete={field.secret ? "new-password" : "off"}
                       placeholder={field.secret && hasSecret(provider, field.key) ? label("stored_secret") : ""}
                       value={provider[field.key]} on:input={(event) => setField(provider, field.key, event)} class="block w-full border rounded p-2" />
                   </label>
                 {/each}
-                {#if provider.protocol !== "s3" && provider.protocol !== "webdav"}
+                {#if provider.protocol !== "s3" && provider.protocol !== "b2" && provider.protocol !== "webdav"}
                   <label class="block">{label("port")}
                     <input type="number" min="0" max="65535" bind:value={provider.port} class="block w-full border rounded p-2" />
                   </label>
                 {/if}
               </div>
               {#if provider.protocol === "s3"}<p class="text-sm mt-2">{label("s3_help")}</p>{/if}
+              {#if provider.protocol === "b2"}<p class="text-sm mt-2">{label("b2_help")}</p>{/if}
               {#if provider.protocol === "sftp"}<p class="text-sm mt-2">{label("sftp_help")}</p>{/if}
               {#if provider.protocol === "ftps"}
                 <label class="block mt-3"><input type="checkbox" bind:checked={provider.implicit_tls} /> {label("implicit_tls")}</label>
