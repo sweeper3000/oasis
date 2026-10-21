@@ -64,9 +64,11 @@ class Harness:
         # Only disposable test connections use this wrapper. Production logs never
         # expose raw provider errors; capture them here to diagnose test failures.
         wrapper = root / "rclone-test-adapter"
-        wrapper.write_text("#!%s\nimport subprocess,sys\np=subprocess.run([%r]+sys.argv[1:],stderr=subprocess.PIPE)\nif p.returncode:\n    with open(%r,'ab') as log: log.write((' '.join(sys.argv[1:])+'\\n').encode()+p.stderr)\nsys.stderr.buffer.write(p.stderr)\nsys.exit(p.returncode)\n" % (sys.executable, str(args.rclone), str(root / "adapter-errors.log")))
+        wrapper.write_text("#!%s\nimport runpy\nrunpy.run_path(%r, run_name='__main__')\n" % (sys.executable, str(REPO / "scripts/test_storage_adapter.py")))
         wrapper.chmod(0o700)
         self.env["OASIS_RCLONE"] = str(wrapper)
+        self.env["OASIS_TEST_ADAPTER_ROOT"] = str(root)
+        self.env["OASIS_TEST_RCLONE"] = str(args.rclone)
         if args.test_python_path:
             self.env["PYTHONPATH"] = str(args.test_python_path)
         self.cookies = http.cookiejar.CookieJar()
@@ -166,13 +168,13 @@ class Harness:
         wait_port(number, process)
         return provider, remote / "test-bucket" / "encrypted" if protocol == "s3" else remote / "encrypted"
 
-    def upload(self, directory, name, content):
+    def upload(self, directory, name, content, status=200):
         uuid = self.api("POST", "/pre-upload", {"filename": name, "target": urllib.parse.quote(directory, safe=""), "size": len(content), "hash": hashlib.md5(content).hexdigest()})[0].decode()
         for index, start in enumerate(range(0, len(content), SLICE), 1):
             request = urllib.request.Request(self.base + "/api/upload/%s/%s" % (uuid, index), data=content[start:start + SLICE], method="POST", headers={"Content-Type": "application/octet-stream"})
             with self.opener.open(request, timeout=120) as response:
                 assert response.status == 200
-        self.api("POST", "/finish-upload/" + uuid)
+        self.api("POST", "/finish-upload/" + uuid, status=status)
         return uuid
 
     def listing(self, path=""):
@@ -198,6 +200,70 @@ class Harness:
             time.sleep(0.05)
         raise AssertionError("Temporary files remain: %s" % list((self.appdir / "temp").iterdir()))
 
+    def adapter_calls(self):
+        path = self.root / "adapter-calls.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def verification_failures(self, drive, complete_matrix=False):
+        fault_file = self.root / "verification-fault.json"
+        content = b"retain the source until the destination is verified"
+        modes = ["size", "missing", "directory", "unknown-size", "malformed", "request-error"] if complete_matrix else ["size"]
+        try:
+            for mode in modes:
+                fault_file.write_text(json.dumps({"mode": mode}))
+                self.upload(drive, "failed-upload.bin", content, status=500)
+                assert json.loads(fault_file.read_text())["count"] == 1
+                self.cleaned()
+                fault_file.unlink()
+                # A verification failure must not automatically delete the destination.
+                assert self.file(drive + "/failed-upload.bin")[0] == content
+                self.api("DELETE", "/file/" + urllib.parse.quote(drive + "/failed-upload.bin", safe=""))
+            source = self.local / "move-source.bin"
+            source.write_bytes(content)
+            fault_file.write_text(json.dumps({"mode": "size"}))
+            self.transfer(source.name, drive, is_copy=False, expected="Failed")
+            assert source.read_bytes() == content
+            self.cleaned()
+            fault_file.unlink()
+            self.api("DELETE", "/file/" + urllib.parse.quote(drive + "/" + source.name, safe=""))
+            source.unlink()
+
+            # Verify that a later failed file retains the entire source folder,
+            # including files whose uploads have already passed verification.
+            source = self.local / "move-folder"
+            source.mkdir()
+            (source / "one.bin").write_bytes(content)
+            (source / "two.bin").write_bytes(content)
+            fault_file.write_text(json.dumps({"mode": "size", "fail_on": 2}))
+            self.transfer(source.name, drive, is_copy=False, expected="Failed")
+            assert (source / "one.bin").read_bytes() == content
+            assert (source / "two.bin").read_bytes() == content
+            assert json.loads(fault_file.read_text())["count"] == 2
+            self.cleaned()
+            fault_file.unlink()
+            self.api("DELETE", "/file/" + urllib.parse.quote(drive + "/" + source.name, safe=""))
+            shutil.rmtree(source)
+
+            if complete_matrix:
+                fault_file.write_text(json.dumps({"mode": "size", "include_markers": True}))
+                self.api("POST", "/dir", {"parent": urllib.parse.quote(drive, safe=""), "name": "marker-failure"}, status=500)
+                assert json.loads(fault_file.read_text())["count"] == 1
+                self.cleaned()
+                fault_file.unlink()
+                self.api("DELETE", "/file/" + urllib.parse.quote(drive + "/marker-failure", safe=""))
+        finally:
+            fault_file.unlink(missing_ok=True)
+        print("PASS %s: verification failures reject uploads and retain file/folder move sources" % drive, flush=True)
+
+    def verified_without_download(self, calls):
+        uploads = [call for call in calls if call[0] == "copyto" and call[2].startswith("oasis:")]
+        assert uploads, "No upload was recorded"
+        for upload in uploads:
+            index = calls.index(upload)
+            following = calls[index + 1]
+            assert following[:3] == ["lsjson", upload[2], "--stat"], following
+        assert not any(call[0] == "copyto" and call[1].startswith("oasis:") for call in calls), "Verification downloaded file data"
+
     def run(self):
         self.start_oasis()
         self.api("GET", "/sys/storage", status=401, anonymous=True)
@@ -220,7 +286,9 @@ class Harness:
             folder = drive + "/Folder"
             self.api("POST", "/dir", {"parent": urllib.parse.quote(drive), "name": "Folder"})
             filename = "report %20.bin"
+            before = len(self.adapter_calls())
             self.upload(folder, filename, contents)
+            self.verified_without_download(self.adapter_calls()[before:])
             path = folder + "/" + filename
             if provider["protocol"] == "smb":
                 names = subprocess.check_output(["docker", "exec", self.containers[0], "find", "/shared/encrypted", "-type", "f"]).decode().splitlines()
@@ -258,6 +326,7 @@ class Harness:
             assert not any("report" in p.name or "renamed" in p.name for p in roots[provider["protocol"]].rglob("*"))
             self.cleaned()
             print("PASS encrypted %s: upload/list/download/ranges/share/subtitles/ZIP/rename/cross-drive copy+move/delete/cleanup" % provider["protocol"], flush=True)
+            self.verification_failures(drive, complete_matrix=provider is providers[0])
         # Wrong key and disabling encryption must not expose or overwrite existing storage.
         changed = copy.deepcopy(config)
         changed["providers"][0]["encryption_key"] = "18" * 32
@@ -275,7 +344,12 @@ class Harness:
             plain_provider["root"] = original["root"].replace("encrypted", "plain")
             plain_provider["encryption"] = False
             self.json("PUT", "/sys/storage", plain_config)
+            before = len(self.adapter_calls())
             self.upload("", "direct.bin", b"ordinary provider data")
+            self.verified_without_download(self.adapter_calls()[before:])
+            self.upload("", "empty.bin", b"")
+            assert self.file("empty.bin")[0] == b""
+            self.api("DELETE", "/file/empty.bin")
             assert self.file("direct.bin")[0] == b"ordinary provider data"
             if original["protocol"] == "smb":
                 subprocess.run(["docker", "exec", "-i", self.containers[0], "tee", "/shared/plain/direct.bin"], input=b"provider-side edit", check=True, stdout=subprocess.DEVNULL)

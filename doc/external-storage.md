@@ -119,8 +119,9 @@ per-file keys (HKDF-SHA-256 with a random 256-bit salt), authenticated length,
 ordered 64 KiB chunks and an authenticated final chunk. Names use deterministic
 AES-256-SIV with a separate derived key and lowercase base32 encoding. This hides
 names and extensions, including from case-insensitive providers; encrypted names
-are limited to approximately 140 UTF-8 bytes. The provider can still see approximate
-sizes, hierarchy, identical name patterns, timestamps and access patterns.
+are limited to approximately 140 UTF-8 bytes. The provider can still see exact
+plaintext file sizes (stored in the authenticated, unencrypted header), hierarchy,
+name lengths, identical name patterns, timestamps and access patterns.
 
 Downloads, previews, range responses, subtitles and ZIP archives are plaintext.
 Files added directly to an encrypted root must use the Oasis format; ordinary
@@ -147,7 +148,17 @@ work when the response closes. There is no persistent remote-file cache. Downloa
 need space for the entire file and start after retrieval/decryption; a range
 request currently fetches and decrypts the whole remote file.
 
-A move deletes its source only after all destination transfers succeed. Failed
+Every external upload, including internal markers, is followed by a fresh
+destination metadata query. Success requires an existing file with the exact
+uploaded byte count; encrypted uploads are checked against the ciphertext size.
+This applies to all six protocols, browser uploads, copies, moves and renames,
+without an additional setting or file download. Missing files, unknown sizes,
+size mismatches and metadata query failures fail the operation. Matching size
+does not detect corruption that preserves length and is not full checksum
+verification. Rclone's existing transfer checks still apply.
+
+A move deletes its source only after all destination transfers and their size
+checks succeed. Browser upload staging is still cleaned up on failure. Failed
 operations can leave completed destination files or provider-managed partial
 uploads; atomic replacement depends on the protocol/server. No background cleanup
 purges provider files automatically, since they are the persistent drive data.
@@ -174,4 +185,6 @@ The opt-in integration suite creates temporary local protocol servers, credentia
 and storage, then removes them. It exercises encrypted uploads, listing, empty
 files, plaintext downloads, byte ranges, sharing, subtitles, ZIPs, renames,
 cross-drive transfers, deletion, staging cleanup, key-change guards, main-drive
-operation without local storage, and settings persistence across restart.
+operation without local storage, and settings persistence across restart. It also
+injects destination metadata failures to confirm rejected uploads and retained
+move sources, and checks that verification never downloads file contents.

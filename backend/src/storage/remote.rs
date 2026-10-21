@@ -292,8 +292,7 @@ impl Remote {
                     tokio::fs::write(&path, crypto::seal(&key, b"oasis-encrypted-namespace-v1")?)
                         .await?;
                     let remote = append(&root, NAMESPACE);
-                    self.run(&["copyto", path.to_str().unwrap(), &remote, "--ignore-times"])
-                        .await?;
+                    self.upload_to(&path, &remote).await?;
                 }
             }
         } else {
@@ -309,13 +308,7 @@ impl Remote {
         let workspace = Workspace::new()?;
         let marker = workspace.path().join("marker");
         tokio::fs::write(&marker, []).await?;
-        self.run(&[
-            "copyto",
-            marker.to_str().unwrap(),
-            &append(&path, DIR_MARKER),
-            "--ignore-times",
-        ])
-        .await?;
+        self.upload_to(&marker, &append(&path, DIR_MARKER)).await?;
         Ok(())
     }
 
@@ -333,20 +326,58 @@ impl Remote {
     }
 
     pub async fn upload(&self, relative: &str, source: &Path) -> Result<()> {
+        self.upload_to(source, &self.path(relative)?).await
+    }
+
+    // All outgoing files, including internal markers, are checked using fresh
+    // remote metadata. For encrypted files, source is the ciphertext staging file.
+    async fn upload_to(&self, source: &Path, destination: &str) -> Result<()> {
+        let metadata = tokio::fs::metadata(source).await?;
+        ensure!(metadata.is_file(), "Upload source must be a file");
+        let expected_size = metadata.len();
         self.run(&[
             "copyto",
             source
                 .to_str()
                 .ok_or_else(|| anyhow!("Invalid staging path"))?,
-            &self.path(relative)?,
+            destination,
             "--ignore-times",
         ])
         .await?;
-        Ok(())
+        let metadata = self
+            .run(&[
+                "lsjson",
+                destination,
+                "--stat",
+                "--no-modtime",
+                "--no-mimetype",
+            ])
+            .await
+            .context("Upload verification failed: could not read destination metadata")?;
+        verify_uploaded_metadata(&metadata, expected_size)
     }
 }
 
 use std::convert::TryInto;
+
+fn verify_uploaded_metadata(bytes: &[u8], expected_size: u64) -> Result<()> {
+    // Do not include raw adapter output, paths or credentials in error messages.
+    let entry: Entry = serde_json::from_slice(bytes)
+        .map_err(|_| anyhow!("Upload verification failed: invalid destination metadata"))?;
+    ensure!(
+        !entry.is_dir,
+        "Upload verification failed: destination is a directory"
+    );
+    ensure!(
+        entry.size >= 0,
+        "Upload verification failed: destination size is unknown"
+    );
+    ensure!(
+        entry.size as u64 == expected_size,
+        "Upload verification failed: destination size differs from uploaded file"
+    );
+    Ok(())
+}
 
 fn append(parent: &str, name: &str) -> String {
     format!(
@@ -364,6 +395,34 @@ fn append(parent: &str, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_verification_requires_a_file_with_the_exact_known_size() {
+        for size in [0, 1, 65536, i64::MAX as u64] {
+            let metadata = serde_json::json!({"Name": "file", "Size": size, "IsDir": false});
+            assert!(
+                verify_uploaded_metadata(&serde_json::to_vec(&metadata).unwrap(), size).is_ok()
+            );
+        }
+        for metadata in [
+            "null",
+            "[]",
+            "not JSON",
+            r#"{"Name":"file","Size":10}"#,
+            r#"{"Name":"file","Size":"10","IsDir":false}"#,
+            r#"{"Name":"file","Size":10,"IsDir":true}"#,
+            r#"{"Name":"file","Size":-1,"IsDir":false}"#,
+            r#"{"Name":"file","Size":9,"IsDir":false}"#,
+            r#"{"Name":"file","Size":11,"IsDir":false}"#,
+        ] {
+            assert!(
+                verify_uploaded_metadata(metadata.as_bytes(), 10).is_err(),
+                "{}",
+                metadata
+            );
+        }
+    }
+
     #[tokio::test]
     async fn maps_all_protocols_and_preserves_absolute_sftp_roots() {
         for protocol in [
