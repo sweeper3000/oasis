@@ -16,11 +16,22 @@ impl Fairing for StaticFileCache {
     }
 
     async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
+        let req_path = request.uri().path();
+        let external_enabled = request
+            .rocket()
+            .state::<crate::service::app_state::AppState>()
+            .and_then(|state| state.storage.lock().ok().map(|config| config.enabled))
+            .unwrap_or(false);
+        if external_enabled && req_path.starts_with("/api/file/") {
+            // Provider-side edits and visibility changes must be seen on the next
+            // request, including previews, shared links and partial responses.
+            response.set_raw_header("Cache-Control", "private, no-store");
+            return;
+        }
         if response.status() != Status::Ok {
             return;
         }
 
-        let req_path = request.uri().path();
         if request.method() == Method::Get && req_static(&req_path) {
             let content = format!("private, max-age={}", constants::CACHE_MAX_AGE);
             response.set_raw_header("Cache-Control", content);

@@ -1,14 +1,12 @@
-use crate::service::range::RangedFile;
+use crate::storage::response::StorageFile;
 use crate::util::constants::{DEFAULT_APP_NAME, DEFAULT_LANGUAGE, DEFAULT_UPDATE_FREQ, VERSION};
-use rocket::fs::NamedFile;
 use rocket::serde::Serialize;
 
 use super::site::Site;
 
 #[derive(Responder)]
 pub enum FileResponse {
-    Range(RangedFile),
-    Binary(NamedFile),
+    Storage(StorageFile),
     Text(String),
 }
 

@@ -1,0 +1,27 @@
+# Build from the repository root (also used by compose.example.yaml).
+FROM node:22-alpine3.23 AS frontend
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+FROM rust:1.90-alpine3.22 AS backend
+RUN apk add --no-cache build-base pkgconf
+WORKDIR /build/backend
+COPY backend/ ./
+RUN cargo build --release --locked
+
+FROM alpine:3.23
+RUN apk add --no-cache ca-certificates rclone libgcc \
+    && addgroup -g 10001 oasis \
+    && adduser -D -u 10001 -G oasis oasis \
+    && mkdir -p /opt/oasis/data /opt/oasis/temp /home/storage \
+    && chown -R oasis:oasis /opt/oasis /home/storage
+WORKDIR /opt/oasis
+COPY --from=backend /build/backend/target/release/oasis ./oasis
+COPY --from=frontend /build/frontend/public ./public
+COPY backend/assets/oasis.conf.sample ./oasis.conf.sample
+USER oasis
+EXPOSE 8000
+CMD ["/opt/oasis/oasis"]

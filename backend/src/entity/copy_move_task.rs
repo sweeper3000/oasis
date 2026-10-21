@@ -1,5 +1,3 @@
-use fs_extra::dir;
-use fs_extra::{copy_items_with_progress, TransitProcess};
 use rocket::serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -55,43 +53,6 @@ impl CopyMoveTask {
             status: CopyMoveTaskStatus::Pending,
             overwrite,
         }
-    }
-
-    pub fn run(&self) {
-        let task = self.clone();
-        std::thread::spawn(move || {
-            let mut options = dir::CopyOptions::new();
-            if task.overwrite {
-                options.overwrite = true;
-                options.skip_exist = false;
-            } else {
-                options.skip_exist = true;
-            }
-
-            let handle = |info: TransitProcess| {
-                task.update_progress(
-                    info.copied_bytes as f64 / info.total_bytes as f64,
-                    CopyMoveTaskStatus::InProgress,
-                );
-                dir::TransitProcessResult::ContinueOrAbort
-            };
-
-            let from_paths = vec![&task.source];
-            if let Err(e) = copy_items_with_progress(&from_paths, &task.target, &options, handle) {
-                eprintln!("Error: {}", e);
-                task.update_progress(0.0, CopyMoveTaskStatus::Failed);
-            }
-
-            if !task.is_copy {
-                if let Err(e) = fs_extra::remove_items(&vec![&task.source]) {
-                    eprintln!("Error: {}", e);
-                    task.update_progress(0.0, CopyMoveTaskStatus::Failed);
-                    return;
-                }
-            }
-
-            task.update_progress(1.0, CopyMoveTaskStatus::Success);
-        });
     }
 
     pub fn update_progress(&self, progress: f64, status: CopyMoveTaskStatus) {

@@ -1,112 +1,88 @@
 use crate::entity::error::Error;
-use anyhow::Result as AnyResult;
-use rocket::http::{ContentType, Status};
-use rocket::response::{self, Responder};
-use rocket::Response;
 use rocket::{
+    http::Status,
     request::{FromRequest, Outcome},
     Request,
 };
-use std::io::SeekFrom;
-use std::path::PathBuf;
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, Take};
 
+#[derive(Clone, Copy)]
+pub enum ByteRange {
+    FromTo(u64, Option<u64>),
+    Suffix(u64),
+}
 pub struct Range {
-    pub range: Option<(u64, u64)>,
+    pub range: Option<ByteRange>,
 }
 
-pub struct RangedFile {
-    path: PathBuf,
-    size: u64,
-    start: u64,
-    end: u64,
-    take: Take<File>,
-}
-
-impl RangedFile {
-    pub async fn new(range: (u64, u64), path: PathBuf) -> AnyResult<Self> {
-        let (start, mut end) = range;
-        let mut file = File::open(&path).await?;
-        let size = file.metadata().await?.len();
-        if end == 0 {
-            end = size - 1;
+impl ByteRange {
+    pub fn parse(value: &str) -> Result<Self, ()> {
+        let value = value.strip_prefix("bytes=").ok_or(())?;
+        let (start, end) = value.split_once('-').ok_or(())?;
+        if start.is_empty() {
+            let suffix = end.parse::<u64>().map_err(|_| ())?;
+            return if suffix > 0 {
+                Ok(Self::Suffix(suffix))
+            } else {
+                Err(())
+            };
         }
-
-        file.seek(SeekFrom::Start(start)).await?;
-        let take = file.take(end - start + 1);
-
-        Ok(RangedFile {
-            path,
-            size,
-            start,
-            end,
-            take,
-        })
+        let start = start.parse::<u64>().map_err(|_| ())?;
+        let end = if end.is_empty() {
+            None
+        } else {
+            Some(end.parse::<u64>().map_err(|_| ())?)
+        };
+        if end.map(|e| e < start).unwrap_or(false) {
+            return Err(());
+        }
+        Ok(Self::FromTo(start, end))
     }
 
-    fn get_content_type(&self) -> ContentType {
-        if let Some(ext) = self.path.extension() {
-            if let Some(ext_str) = ext.to_str() {
-                if let Some(content_type) = ContentType::from_extension(ext_str) {
-                    return content_type;
-                }
+    pub fn resolve(self, size: u64) -> Option<(u64, u64)> {
+        if size == 0 {
+            return None;
+        }
+        match self {
+            Self::Suffix(length) => Some((size.saturating_sub(length), size - 1)),
+            Self::FromTo(start, end) if start < size => {
+                Some((start, end.unwrap_or(size - 1).min(size - 1)))
             }
+            _ => None,
         }
-
-        ContentType::Binary
-    }
-
-    fn get_content_range(&self) -> String {
-        format!("bytes {}-{}/{}", self.start, self.end, self.size)
-    }
-
-    fn get_content_len(&self) -> String {
-        (self.end - self.start + 1).to_string()
     }
 }
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for Range {
     type Error = Error;
-
-    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let bad_request = (Status::BadRequest, Error::BadRequest);
-        let range_header = req.headers().get_one("Range");
-
-        match range_header {
-            Some(range_str) => {
-                let parts: Vec<&str> = range_str.split(|c| c == '=' || c == '-').collect();
-
-                // start value must be valid.
-                let start: u64 = match parts.get(1) {
-                    Some(v) => v.parse().unwrap(),
-                    None => return Outcome::Failure(bad_request),
-                };
-
-                // end value could be empty, but must not be smaller than start value.
-                let end: u64 = parts.get(2).unwrap_or(&"0").parse().unwrap_or(0);
-                if end < start && end != 0 {
-                    return Outcome::Failure(bad_request);
-                }
-
-                Outcome::Success(Range {
-                    range: Some((start, end)),
-                })
-            }
-            None => Outcome::Success(Range { range: None }),
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match request.headers().get_one("Range") {
+            None => Outcome::Success(Self { range: None }),
+            Some(value) => match ByteRange::parse(value) {
+                Ok(range) => Outcome::Success(Self { range: Some(range) }),
+                Err(()) => Outcome::Failure((Status::RangeNotSatisfiable, Error::BadRequest)),
+            },
         }
     }
 }
 
-impl<'r, 'o: 'r> Responder<'r, 'o> for RangedFile {
-    fn respond_to(self, _req: &'r Request<'_>) -> response::Result<'o> {
-        Response::build()
-            .status(Status::PartialContent)
-            .header(self.get_content_type())
-            .raw_header("Content-Range", self.get_content_range())
-            .raw_header("Content-Length", self.get_content_len())
-            .streamed_body(self.take)
-            .ok()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn resolves_bounded_open_and_suffix_ranges() {
+        for (input, expected) in [
+            ("bytes=0-0", Some((0, 0))),
+            ("bytes=5-", Some((5, 9))),
+            ("bytes=-3", Some((7, 9))),
+            ("bytes=1-999", Some((1, 9))),
+            ("bytes=10-", None),
+        ] {
+            assert_eq!(ByteRange::parse(input).unwrap().resolve(10), expected);
+        }
+        for value in ["bytes=3-1", "bytes=-0", "bytes=0-1,4-5", "items=0-2"] {
+            assert!(ByteRange::parse(value).is_err());
+        }
+        assert_eq!(ByteRange::parse("bytes=0-").unwrap().resolve(0), None);
     }
 }

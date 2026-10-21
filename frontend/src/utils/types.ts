@@ -148,3 +148,36 @@ export type ContextMenuAction =
   | "copy"
   | "move"
   | "download";
+
+export type StorageProtocol = "s3" | "sftp" | "ftps" | "ftp" | "webdav" | "smb";
+export interface IStorageProvider {
+  id: string;
+  name: string;
+  protocol: StorageProtocol;
+  root: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  endpoint: string;
+  region: string;
+  access_key_id: string;
+  secret_access_key: string;
+  session_token: string;
+  key_file: string;
+  known_hosts_file: string;
+  domain: string;
+  implicit_tls: boolean;
+  encryption: boolean;
+  encryption_key: string;
+  password_set?: boolean;
+  secret_access_key_set?: boolean;
+  session_token_set?: boolean;
+  encryption_key_set?: boolean;
+}
+export interface IStorageConfig {
+  enabled: boolean;
+  mode: "mount" | "main";
+  main_provider: string;
+  providers: IStorageProvider[];
+}

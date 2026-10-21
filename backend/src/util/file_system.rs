@@ -7,8 +7,8 @@ use sysinfo::{DiskExt, System, SystemExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub fn get_system_volumes() -> AnyResult<Vec<String>> {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    let mut sys = System::new();
+    sys.refresh_disks_list();
 
     let mut volumes = vec![];
     for disk in sys.disks() {
@@ -36,16 +36,16 @@ pub async fn get_sub_dirs(dir: &PathBuf) -> AnyResult<Vec<PathBuf>> {
 }
 
 pub fn get_available_space(storage: &str) -> u64 {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    let mut sys = System::new();
+    sys.refresh_disks_list();
 
-    for disk in sys.disks() {
-        if storage.starts_with(&disk.mount_point().to_string_lossy().to_string()) {
-            return disk.available_space();
-        }
-    }
-
-    return 0;
+    let path = std::path::Path::new(storage);
+    sys.disks()
+        .iter()
+        .filter(|disk| path.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().as_os_str().len())
+        .map(|disk| disk.available_space())
+        .unwrap_or(0)
 }
 
 // All text file needs to check the encoding method.

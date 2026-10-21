@@ -3,10 +3,19 @@ name = "oasis"
 version = "0.2.5"
 authors = ["Cheng <machengiam@gmail.com>"]
 edition = "2018"
+rust-version = "1.85"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+aead = { version = "0.5", features = ["stream"] }
+aes-gcm = "0.10"
+aes-siv = "0.7"
+base64 = "0.22"
+data-encoding = "2"
+hkdf = "0.11"
+serde_json = "1"
+tempfile = "3"
 rocket = {version = "0.5.0-rc.1", features = ["json", "tls"]}
 anyhow = "1.0"
 async_zip = { version = "0.0.11", features = ["deflate"] }
@@ -14,7 +23,6 @@ chardetng = "0.1.14"
 chrono = "0.4"
 bcrypt = "0.10"
 encoding_rs = "0.8.28"
-fs_extra = "1.2"
 include_dir = "0.6.2"
 jsonwebtoken = "7"
 lazy_static = "1.4.0"
@@ -28,4 +36,3 @@ tokio = { version = "1.10.1", features = ["full"] }
 time = "0.2.11"
 urlencoding = "2.1.0"
 uuid = { version = "0.8", features = ["v4"] }
-walkdir = "2"

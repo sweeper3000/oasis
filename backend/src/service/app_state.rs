@@ -3,8 +3,9 @@ use anyhow::Result as AnyResult;
 use sqlx::{pool::PoolConnection, Pool, Sqlite};
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex, MutexGuard};
 
-#[derive(Debug)]
 pub struct AppState {
+    pub storage: Mutex<crate::storage::config::StorageConfig>,
+    pub storage_settings_lock: tokio::sync::Mutex<()>,
     pub first_run: AtomicBool,
     pub site: Arc<Mutex<Site>>,
     pub pool: Pool<Sqlite>,
@@ -20,11 +21,49 @@ impl AppState {
         };
 
         Self {
+            storage: Mutex::new(crate::storage::config::StorageConfig::default()),
+            storage_settings_lock: tokio::sync::Mutex::new(()),
             first_run: AtomicBool::new(first_run),
             site: Arc::new(Mutex::new(site)),
             pool,
             uploads: Arc::new(Mutex::new(vec![])),
         }
+    }
+
+    pub fn get_storage_config(&self) -> AnyResult<crate::storage::config::StorageConfig> {
+        Ok(self
+            .storage
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage configuration lock failed"))?
+            .clone())
+    }
+
+    pub fn set_storage_config(
+        &self,
+        config: crate::storage::config::StorageConfig,
+    ) -> AnyResult<()> {
+        *self
+            .storage
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage configuration lock failed"))? = config;
+        Ok(())
+    }
+
+    pub fn start_upload_reaper(&self) {
+        let uploads = self.uploads.clone();
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                timer.tick().await;
+                if let Ok(mut tasks) = uploads.lock() {
+                    let cutoff = crate::util::get_utc_seconds() - 3600;
+                    tasks.retain(|task| {
+                        task.touched_at.load(Ordering::Relaxed) > cutoff
+                            || task.lock.try_lock().is_err()
+                    });
+                }
+            }
+        });
     }
 
     pub fn get_first_run(&self) -> bool {

@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+.aws
+**/node_modules
+**/target
+**/release
+frontend/public/build
+docker/*.zip
+.env
+.env.*
+secrets
+data
+storage
+**/*.log

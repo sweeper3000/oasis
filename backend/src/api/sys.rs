@@ -130,10 +130,18 @@ async fn update_site(
         return Err(Error::Unauthorized);
     }
 
+    let _storage_lock = state.storage_settings_lock.lock().await;
+    let external = state.get_storage_config()?;
+    let main_external =
+        external.enabled && external.mode == crate::storage::config::StorageMode::Main;
     let storage = util::parse_encoded_url(&req_body.storage)?;
-    if !storage.exists() || !storage.is_dir() {
+    if !main_external && (!storage.exists() || !storage.is_dir()) {
         return Err(Error::BadRequest);
     }
+    let mut validated_external = external;
+    validated_external
+        .validate(storage.to_str().ok_or(Error::BadRequest)?)
+        .map_err(|_| Error::BadRequest)?;
 
     let storage_str = storage.to_str().unwrap().to_owned();
     let mut conn = state.get_pool_conn().await?;

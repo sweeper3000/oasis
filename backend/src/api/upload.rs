@@ -1,48 +1,60 @@
-use crate::entity::error::Error;
-use crate::entity::request::{CancelUploadRequest, UploadRequest};
-use crate::entity::upload_task::UploadTask;
-use crate::service::app_state::AppState;
-use crate::service::auth::AuthAdmin;
-use crate::util;
-use anyhow::Result as AnyResult;
-use rocket::fs::TempFile;
-use rocket::serde::json::Json;
-use rocket::tokio::fs;
-use rocket::{Route, State};
-use std::path::PathBuf;
-use tokio::fs::File;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::{
+    entity::upload_task::UploadTask,
+    entity::{
+        error::Error,
+        request::{CancelUploadRequest, UploadRequest},
+    },
+    service::{app_state::AppState, auth::AuthAdmin},
+    storage::{self, Storage},
+    util,
+};
+use rocket::{fs::TempFile, serde::json::Json, Route, State};
+use std::{path::Path, sync::atomic::Ordering};
+use tokio::{fs, io::AsyncWriteExt};
+const SLICE: u64 = 2 * 1024 * 1024;
 
 pub fn route() -> Vec<Route> {
     routes![pre_upload, upload_file_slices, finish_upload, cancel_upload]
 }
 
-// TODO: breakpoint continue
 #[post("/pre-upload", data = "<req_body>")]
 async fn pre_upload(
     state: &State<AppState>,
     req_body: Json<UploadRequest>,
     user: AuthAdmin,
 ) -> Result<String, Error> {
-    let storage = state.get_site()?.storage.clone();
-    let target_dir = PathBuf::from(&storage).join(&util::parse_encoded_url(&req_body.target)?);
-    if !target_dir.exists() || !target_dir.is_dir() {
+    let _settings_lock = state.storage_settings_lock.lock().await;
+    storage::validate_name(&req_body.filename).map_err(|_| Error::BadRequest)?;
+    let dir = super::files::encoded_path(&req_body.target)?;
+    let storage = Storage::from_state(state)?;
+    if !storage.stat(&dir).await?.map(|m| m.is_dir).unwrap_or(false) {
         return Err(Error::BadRequest);
     }
-
-    let available_space = util::file_system::get_available_space(&storage);
-    if available_space > 0 && available_space < req_body.size {
+    let target = storage::join(&dir, &req_body.filename).map_err(|_| Error::BadRequest)?;
+    if storage.protected_root(&target) {
         return Err(Error::BadRequest);
     }
-
-    let upload_task = UploadTask::new(&req_body, user.uid, target_dir);
-    let uuid = upload_task.uuid.clone();
-    let temp_upload_dir = PathBuf::from(util::get_temp_path()).join(&upload_task.uuid);
-    fs::create_dir_all(temp_upload_dir).await?;
-    state.push_upload_task(upload_task)?;
-
+    if state.get_upload_tasks()?.len() >= 32 {
+        return Err(Error::Conflict);
+    }
+    let available =
+        util::file_system::get_available_space(&util::get_temp_path().to_string_lossy());
+    // Assembly/encryption can temporarily require a second copy.
+    if available > 0 && req_body.size.saturating_mul(2) > available {
+        return Err(Error::BadRequest);
+    }
+    let task = UploadTask::new(&req_body, user.uid, dir, storage)?;
+    let uuid = task.uuid.clone();
+    state.push_upload_task(task)?;
     Ok(uuid)
+}
+
+fn owned_task(state: &AppState, uuid: &str, user: &AuthAdmin) -> Result<UploadTask, Error> {
+    let task = state.find_upload_uuid(uuid)?.ok_or(Error::NotFound)?;
+    if task.userid != user.uid {
+        return Err(Error::Unauthorized);
+    }
+    Ok(task)
 }
 
 #[post("/upload/<uuid>/<index>", data = "<file>")]
@@ -53,56 +65,45 @@ async fn upload_file_slices(
     mut file: TempFile<'_>,
     user: AuthAdmin,
 ) -> Result<(), Error> {
-    let task = match state.find_upload_uuid(uuid)? {
-        Some(v) => v,
-        None => return Err(Error::BadRequest),
-    };
-
-    if task.userid != user.uid {
-        return Err(Error::Unauthorized);
+    let task = owned_task(state, uuid, &user)?;
+    let _lock = task.lock.lock().await;
+    if state.find_upload_uuid(uuid)?.is_none() {
+        return Err(Error::NotFound);
     }
-
-    let temp_upload_dir = PathBuf::from(util::get_temp_path()).join(uuid);
-    if !temp_upload_dir.exists() || !temp_upload_dir.is_dir() {
+    let count = task.size / SLICE + u64::from(task.size % SLICE != 0);
+    if index == 0 || index > count {
         return Err(Error::BadRequest);
     }
-
-    let temp_file = temp_upload_dir.join(index.to_string());
-    if let Err(e) = file.copy_to(temp_file).await {
-        eprintln!("File slice copy error: {:?}", e);
-        return Err(Error::InternalServerError);
+    let expected = (task.size - (index - 1) * SLICE).min(SLICE);
+    if file.len() != expected {
+        return Err(Error::BadRequest);
     }
-
+    let target = task.workspace.path().join(index.to_string());
+    file.copy_to(target).await?;
+    task.touched_at
+        .store(util::get_utc_seconds(), Ordering::Relaxed);
     Ok(())
 }
 
 #[post("/finish-upload/<uuid>")]
-async fn finish_upload(state: &State<AppState>, uuid: &str, _user: AuthAdmin) -> Result<(), Error> {
-    let temp_upload_dir = PathBuf::from(util::get_temp_path()).join(uuid);
-    if !temp_upload_dir.exists() || !temp_upload_dir.is_dir() {
-        return Err(Error::BadRequest);
+async fn finish_upload(state: &State<AppState>, uuid: &str, user: AuthAdmin) -> Result<(), Error> {
+    let task = owned_task(state, uuid, &user)?;
+    let _lock = task.lock.lock().await;
+    if state.find_upload_uuid(uuid)?.is_none() {
+        return Err(Error::NotFound);
     }
+    let result = finish(&task).await;
+    // Removing the final task reference removes all staging files on success or
+    // error. A failed upload never starts by deleting the existing destination.
+    state.remove_upload_task(task.clone())?;
+    result.map_err(Error::from)
+}
 
-    let task = state.find_upload_uuid(uuid)?.unwrap();
-    let target_dir = &task.dir;
-    if !target_dir.exists() || target_dir.is_file() {
-        return Err(Error::BadRequest);
-    }
-
-    let target_file_path = target_dir.join(&task.filename);
-    if target_file_path.exists() {
-        fs::remove_file(&target_file_path).await?;
-    }
-
-    if let Err(e) = combine_file_slices(&target_file_path, &temp_upload_dir, task.size).await {
-        eprintln!("Error when combining file slices: {}", e);
-        fs::remove_file(&target_file_path).await?;
-        return Err(Error::InternalServerError);
-    }
-
-    fs::remove_dir_all(&temp_upload_dir).await?;
-    state.remove_upload_task(task)?;
-
+async fn finish(task: &UploadTask) -> anyhow::Result<()> {
+    let assembled = task.workspace.path().join("assembled");
+    combine_file_slices(&assembled, task.workspace.path(), task.size).await?;
+    let target = storage::join(&task.dir, &task.filename)?;
+    task.storage.write(&target, &assembled).await?;
     Ok(())
 }
 
@@ -112,62 +113,51 @@ async fn cancel_upload(
     req_body: Json<CancelUploadRequest>,
     user: AuthAdmin,
 ) -> Result<(), Error> {
-    for uuid in req_body.uuids.iter() {
-        remove_upload_task(state, uuid, &user).await?;
+    for uuid in &req_body.uuids {
+        if state.find_upload_uuid(uuid)?.is_none() {
+            continue;
+        }
+        let task = owned_task(state, uuid, &user)?;
+        let _lock = task.lock.lock().await;
+        state.remove_upload_task(task.clone())?;
     }
-
     Ok(())
 }
 
-async fn remove_upload_task(
-    state: &State<AppState>,
-    uuid: &str,
-    user: &AuthAdmin,
-) -> AnyResult<()> {
-    if let Some(task) = state.find_upload_uuid(uuid)? {
-        if task.userid != user.uid {
-            return Err(anyhow::anyhow!("User id not match to remove task"));
-        }
-
-        let temp_upload_dir = PathBuf::from(util::get_temp_path()).join(&task.uuid);
-        if temp_upload_dir.exists() && temp_upload_dir.is_dir() {
-            fs::remove_dir_all(temp_upload_dir).await?;
-        }
-
-        state.remove_upload_task(task)?;
+async fn combine_file_slices(target: &Path, directory: &Path, size: u64) -> anyhow::Result<()> {
+    let mut output = fs::File::create(target).await?;
+    let count = size / SLICE + u64::from(size % SLICE != 0);
+    let mut written = 0;
+    for index in 1..=count {
+        let path = directory.join(index.to_string());
+        let mut input = fs::File::open(&path).await?;
+        let expected = (size - (index - 1) * SLICE).min(SLICE);
+        anyhow::ensure!(
+            input.metadata().await?.len() == expected,
+            "Upload slice size mismatch"
+        );
+        written += tokio::io::copy(&mut input, &mut output).await?;
+        drop(input);
+        fs::remove_file(path).await?;
     }
-
+    anyhow::ensure!(written == size, "Upload size mismatch");
+    output.flush().await?;
     Ok(())
 }
 
-async fn combine_file_slices(
-    target_file_path: &PathBuf,
-    temp_upload_dir: &PathBuf,
-    req_file_size: u64,
-) -> AnyResult<()> {
-    let mut target_file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&target_file_path)
-        .await?;
-
-    let mut index: u64 = 1; // Change to start index from 1.
-    let mut file_slice = temp_upload_dir.join(index.to_string());
-
-    while file_slice.exists() {
-        let mut buffer = vec![];
-        let mut source_file = File::open(&file_slice).await?;
-        source_file.read_to_end(&mut buffer).await?;
-        target_file.write_all(&buffer).await?;
-
-        index += 1;
-        file_slice = temp_upload_dir.join(index.to_string());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn assembly_detects_missing_slices_and_removes_consumed_slices() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("assembled");
+        assert!(combine_file_slices(&output, dir.path(), 1).await.is_err());
+        fs::write(dir.path().join("1"), b"a").await.unwrap();
+        combine_file_slices(&output, dir.path(), 1).await.unwrap();
+        assert!(!dir.path().join("1").exists());
+        assert_eq!(fs::read(&output).await.unwrap(), b"a");
+        combine_file_slices(&output, dir.path(), 0).await.unwrap();
+        assert_eq!(fs::metadata(output).await.unwrap().len(), 0);
     }
-
-    let filesize = fs::metadata(&target_file_path).await?.len();
-    if filesize != req_file_size {
-        return Err(anyhow::anyhow!("File size not match"));
-    }
-
-    Ok(())
 }

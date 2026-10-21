@@ -3,6 +3,7 @@ extern crate rocket;
 mod api;
 mod entity;
 mod service;
+mod storage;
 mod util;
 use crate::util::local_ip::ServerConfig;
 use entity::{copy_move_task::CopyMoveTask, site::Site};
@@ -41,6 +42,10 @@ async fn launch() -> Result<(), anyhow::Error> {
 
     let site_op = Site::read(&mut conn).await?;
     let state = AppState::new(site_op, pool);
+    let storage_config =
+        storage::config::StorageConfig::load(&state.pool, &state.get_secret()?).await?;
+    state.set_storage_config(storage_config)?;
+    state.start_upload_reaper();
     let config = ServerConfig::new()?;
     RocketEnv::setup(&config);
 

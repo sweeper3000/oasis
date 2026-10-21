@@ -4,6 +4,7 @@
   import { useNavigate, useFocus } from "svelte-navigator";
   import Spinner from "../components/Spinner.svelte";
   import Button from "../components/Button.svelte";
+  import StorageSettings from "../sections/StorageSettings.svelte";
   import DirBrowser from "../sections/DirBrowser.svelte";
   import * as api from "../utils/api";
   import {
@@ -20,6 +21,7 @@
   const navigate = useNavigate();
   const focus = useFocus();
   let isLoading = false;
+  let mainExternalActive = false;
   let form: HTMLFormElement;
   let isOpenDirBrowser = false;
   let selectedDir = null;
@@ -86,7 +88,7 @@
   };
 
   const validateForm = (): boolean => {
-    if (!selectedDir || selectedDir.trim().length === 0) {
+    if (!mainExternalActive && (!selectedDir || selectedDir.trim().length === 0)) {
       isNoStorageError = true;
       return false;
     }
@@ -99,7 +101,7 @@
     const payload: IUpdateConfigRequest = {
       sitename,
       language,
-      storage: encodeURIComponent(selectedDir),
+      storage: encodeURIComponent(selectedDir || ""),
       update_freq,
       allow_guest,
     };
@@ -144,7 +146,7 @@
   };
 </script>
 
-<div class="relative container-height w-full">
+<div class="w-full mx-auto settings-layout py-8 px-4">
   {#if isOpenDirBrowser}
     <DirBrowser
       onClose={() => (isOpenDirBrowser = false)}
@@ -156,7 +158,7 @@
   {/if}
   <form on:submit={onConfirm} bind:this={form}>
     <div
-      class="panel-width mx-auto center bg-gray-50 shadow rounded-lg flex flex-col items-center p-2 md:p-8"
+      class="panel-width mx-auto bg-gray-50 shadow rounded-lg flex flex-col items-center p-2 md:p-8"
     >
       <div class="text-xl font-bold mb-8 text-gray-700">
         {$t("component.settings.title")}
@@ -227,8 +229,11 @@
 
       <!-- Storage setting -->
       <div class="w-full grid grid-cols-4 mb-8">
-        <div>{$t("form.storage")}:</div>
+        <div>{$t("component.external_storage.local_storage")}:</div>
         <div class="col-span-3 pl-2">
+          {#if mainExternalActive}
+            <p class="text-sm mb-2">{$t("component.external_storage.local_inactive")}</p>
+          {/if}
           {#if selectedDir}
             <Button
               value={$t("button.change")}
@@ -262,11 +267,13 @@
       </div>
     </div>
   </form>
+  <StorageSettings onSaved={(config) => { mainExternalActive = config.enabled && config.mode === "main"; }} />
 </div>
 
 <style>
+  .settings-layout { max-width: 52rem; }
   .panel-width {
-    width: 24rem;
-    max-width: 90vw;
+    width: 100%;
+    max-width: 100%;
   }
 </style>

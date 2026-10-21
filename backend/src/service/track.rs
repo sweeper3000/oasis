@@ -1,32 +1,6 @@
-use crate::util::file_system;
 use anyhow::Result as AnyResult;
 use regex::Regex;
-use std::path::PathBuf;
-const LIMIT: u64 = 1 * 1024 * 1024;
-
-pub async fn get_track(vtt_path: PathBuf) -> AnyResult<String> {
-    if vtt_path.exists() && vtt_path.is_file() {
-        if vtt_path.metadata()?.len() > LIMIT {
-            return Err(anyhow::anyhow!("Track file too big"));
-        }
-
-        return file_system::read_text_file(vtt_path).await;
-    }
-
-    let srt_path = vtt_path.with_extension("srt");
-    if srt_path.exists() && srt_path.is_file() {
-        if srt_path.metadata()?.len() > LIMIT {
-            return Err(anyhow::anyhow!("Track file too big"));
-        }
-
-        let srt_string = file_system::read_text_file(srt_path).await?;
-        return srt_to_vtt(&srt_string).await;
-    }
-
-    Err(anyhow::anyhow!("Cannot find track file"))
-}
-
-async fn srt_to_vtt(srt_str: &str) -> AnyResult<String> {
+pub async fn srt_to_vtt(srt_str: &str) -> AnyResult<String> {
     let lines = srt_str.lines();
 
     let mut vtt_str = String::from("WEBVTT");

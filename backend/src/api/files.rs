@@ -1,28 +1,29 @@
-use crate::entity::copy_move_task::{CopyMoveFileRequest, CopyMoveTask};
-use crate::entity::error::Error;
-use crate::entity::file::{File, FileType};
-use crate::entity::hidden::Hidden;
-use crate::entity::request::{
-    CreateDirRequest, GenerateLinkRequest, RenameFileRequest, SetFileVisibilityRequest,
+use crate::{
+    entity::{
+        copy_move_task::{CopyMoveFileRequest, CopyMoveTask, CopyMoveTaskStatus},
+        error::Error,
+        file::{File, FileType},
+        hidden::Hidden,
+        request::{
+            CreateDirRequest, GenerateLinkRequest, RenameFileRequest, SetFileVisibilityRequest,
+        },
+        response::FileResponse,
+    },
+    service::{
+        app_state::AppState,
+        auth::{AuthAdmin, AuthUser},
+        range::Range,
+        track,
+    },
+    storage::{self, response::StorageFile, Storage},
+    util,
 };
-use crate::entity::response::FileResponse;
-use crate::service::app_state::AppState;
-use crate::service::auth::{AuthAdmin, AuthUser};
-use crate::service::range::{Range, RangedFile};
-use crate::service::track;
-use crate::util::constants::ZIP_BUFFER_SIZE;
-use crate::util::{self, file_system};
-use anyhow::Result as AnyResult;
+use anyhow::{anyhow, Result as AnyResult};
 use async_zip::{write::ZipFileWriter, Compression, ZipEntryBuilder};
-use rocket::fs::NamedFile;
-use rocket::response::stream::ByteStream;
-use rocket::serde::json::Json;
-use rocket::tokio::fs;
-use rocket::tokio::io::{self, AsyncReadExt, AsyncWrite};
-use rocket::{Route, State};
+use rocket::{response::stream::ByteStream, serde::json::Json, Route, State};
 use sqlx::Acquire;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::path::Path;
+use tokio::io::{AsyncReadExt, AsyncWrite};
 
 pub fn route() -> Vec<Route> {
     routes![
@@ -42,68 +43,57 @@ pub fn route() -> Vec<Route> {
     ]
 }
 
+pub fn encoded_path(path: &str) -> Result<String, Error> {
+    let decoded = urlencoding::decode(path).map_err(|_| Error::BadRequest)?;
+    virtual_path(&decoded)
+}
+fn virtual_path(path: &str) -> Result<String, Error> {
+    storage::normalize(path).map_err(|_| Error::BadRequest)
+}
+
+fn permission(path: &str, hiddens: &[Hidden]) -> i8 {
+    hiddens
+        .iter()
+        .filter(|hidden| path == hidden.path || path.starts_with(&format!("{}/", hidden.path)))
+        .map(|hidden| hidden.least_permission)
+        .max()
+        .unwrap_or(0)
+}
+async fn authorize(state: &AppState, path: &str, user: &AuthUser) -> Result<(), Error> {
+    let mut conn = state.get_pool_conn().await?;
+    if permission(path, &Hidden::find_all(&mut conn).await?) > user.permission {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+
 #[get("/dir?<path>")]
 async fn dir_content(
     path: Option<&str>,
     user: AuthUser,
     state: &State<AppState>,
 ) -> Result<Json<Vec<File>>, Error> {
-    let storage = state.get_site()?.storage.clone();
-    let target_path = match path {
-        Some(dir) => PathBuf::from(&storage).join(&util::parse_encoded_url(dir)?),
-        None => PathBuf::from(&storage),
-    };
-
-    if !target_path.exists() || !target_path.is_dir() {
-        eprintln!("Invalid dir path: {:?}", &target_path);
-        return Err(Error::BadRequest);
-    }
-
+    let path = virtual_path(path.unwrap_or(""))?;
+    let storage = Storage::from_state(state)?;
     let mut conn = state.get_pool_conn().await?;
     let hiddens = Hidden::find_all(&mut conn).await?;
-
-    if get_least_permission(&target_path, &storage, &hiddens) > user.permission {
+    if permission(&path, &hiddens) > user.permission {
         return Err(Error::Unauthorized);
     }
-
-    let mut dir_iterator = fs::read_dir(target_path).await?;
-    let mut content: Vec<File> = Vec::new();
-    while let Some(entry) = dir_iterator.next_entry().await? {
-        let path = entry.path();
-        let least_permission = get_least_permission(&path, &storage, &hiddens);
-        if least_permission <= user.permission {
-            content.push(File::from_path(&path, false, &storage, least_permission)?);
-        }
-    }
-
-    Ok(Json(content))
-}
-
-#[get("/download/dir?<path>")]
-async fn download_dir(
-    path: &str,
-    _user: AuthAdmin,
-    state: &State<AppState>,
-) -> ByteStream![Vec<u8>] {
-    let (mut writer, mut reader) = tokio::io::duplex(ZIP_BUFFER_SIZE);
-    let target_path = get_target_path(state, path).unwrap();
-    rocket::tokio::spawn(async move {
-        if let Err(e) = zip_dir(&mut writer, &target_path).await {
-            println!("Error ziping dir: {}", e);
-        }
-    });
-
-    ByteStream! {
-        loop {
-            let mut buf = vec![0; ZIP_BUFFER_SIZE];
-            let r = reader.read(&mut buf).await.unwrap();
-            if r == 0 {
-                break;
+    let content = storage
+        .list(&path)
+        .await?
+        .into_iter()
+        .filter_map(|entry| {
+            let required = permission(&entry.path, &hiddens);
+            if required <= user.permission {
+                Some(entry.file(false, required))
+            } else {
+                None
             }
-            buf.truncate(r);
-            yield buf;
-        }
-    }
+        })
+        .collect();
+    Ok(Json(content))
 }
 
 #[post("/dir", data = "<req_body>")]
@@ -112,16 +102,37 @@ async fn create_dir(
     req_body: Json<CreateDirRequest>,
     _user: AuthAdmin,
 ) -> Result<(), Error> {
-    let storage = state.get_site()?.storage.clone();
-    let parent = util::parse_encoded_url(&req_body.parent)?;
-    let parent_path = PathBuf::from(storage).join(&parent);
-    let target_path = parent_path.join(&req_body.name);
+    let parent = encoded_path(&req_body.parent)?;
+    let target = storage::join(&parent, &req_body.name).map_err(|_| Error::BadRequest)?;
+    Ok(Storage::from_state(state)?.mkdir(&target).await?)
+}
 
-    if !parent_path.exists() || target_path.exists() {
-        return Err(Error::BadRequest);
+async fn serve_file(
+    storage: Storage,
+    path: &str,
+    range: Range,
+    text_preview: bool,
+) -> Result<FileResponse, Error> {
+    let file = storage.materialize(path).await?;
+    let kind = FileType::infer_file_type(
+        Path::new(path)
+            .extension()
+            .and_then(|p| p.to_str())
+            .unwrap_or(""),
+    );
+    if range.range.is_none() && text_preview && kind == FileType::Text {
+        let text = util::file_system::read_text_file(file.path.clone()).await?;
+        return Ok(FileResponse::Text(text));
     }
-
-    Ok(fs::create_dir(target_path).await?)
+    Ok(FileResponse::Storage(StorageFile::new(
+        file,
+        Path::new(path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into(),
+        range.range,
+    )))
 }
 
 #[get("/file/<path>")]
@@ -131,34 +142,9 @@ async fn file_content(
     state: &State<AppState>,
     range_header: Range,
 ) -> Result<FileResponse, Error> {
-    let target_path = get_target_path(state, path).map_err(|e| {
-        eprintln!("{}", e);
-        return 400;
-    })?;
-
-    if !target_path.is_file() {
-        return Err(Error::BadRequest);
-    }
-
-    let mut conn = state.get_pool_conn().await?;
-    let hiddens = Hidden::find_all(&mut conn).await?;
-    let storage = state.get_site()?.storage.clone();
-    if max_permission_parent(&target_path, &storage, &hiddens) > user.permission {
-        return Err(Error::Unauthorized);
-    }
-
-    let is_text = FileType::get_file_type(&target_path) == FileType::Text;
-
-    match (range_header.range, is_text) {
-        (Some(range), _) => {
-            let ranged_file = RangedFile::new(range, target_path).await?;
-            Ok(FileResponse::Range(ranged_file))
-        }
-        (None, true) => Ok(FileResponse::Text(
-            file_system::read_text_file(target_path).await?,
-        )),
-        (None, false) => Ok(FileResponse::Binary(NamedFile::open(target_path).await?)),
-    }
+    let path = virtual_path(path)?;
+    authorize(state, &path, &user).await?;
+    serve_file(Storage::from_state(state)?, &path, range_header, true).await
 }
 
 #[put("/file/<path>/name", data = "<req_body>")]
@@ -168,26 +154,19 @@ async fn update_file_name(
     req_body: Json<RenameFileRequest>,
     _user: AuthAdmin,
 ) -> Result<(), Error> {
-    let current_file = get_target_path(state, path).map_err(|e| {
-        eprintln!("{}", e);
-        return 400;
-    })?;
-
-    let target_file = current_file.parent().unwrap().join(&req_body.new_name);
-
-    if target_file.exists() {
-        return Err(Error::BadRequest);
-    }
-
-    fs::rename(current_file, &target_file).await?;
-
-    let target_relative_path = get_relative_path(state, &target_file)?;
-    let target_path_str = target_relative_path.to_str().unwrap();
-    let mut conn = state.get_pool_conn().await?;
-    let mut tx = conn.begin().await?;
-    Hidden::update_all_sub_path_query(&mut tx, path, target_path_str).await?;
-    tx.commit().await?;
-
+    let path = virtual_path(path)?;
+    let parent = Path::new(&path)
+        .parent()
+        .unwrap_or(Path::new(""))
+        .to_string_lossy();
+    let target = storage::join(&parent, &req_body.new_name).map_err(|_| Error::BadRequest)?;
+    let storage = Storage::from_state(state)?;
+    storage
+        .transfer_with_hook(&path, &target, false, false, || {
+            sync_visibility(&state.pool, &path, &target)
+        })
+        .await?;
+    remove_source_visibility(&state.pool, &path).await?;
     Ok(())
 }
 
@@ -198,75 +177,81 @@ async fn update_file_visibility(
     req_body: Json<SetFileVisibilityRequest>,
     _user: AuthAdmin,
 ) -> Result<(), Error> {
+    let path = virtual_path(path)?;
+    if Storage::from_state(state)?.stat(&path).await?.is_none() {
+        return Err(Error::NotFound);
+    }
     let mut conn = state.get_pool_conn().await?;
     let mut tx = conn.begin().await?;
-
+    Hidden::delete_query(&path, &mut tx).await?;
     if !req_body.visible {
-        let hidden = Hidden::new(path, 1);
-        hidden.insert_query(&mut tx).await?;
-    } else {
-        Hidden::delete_query(path, &mut tx).await?;
+        Hidden::new(&path, 1).insert_query(&mut tx).await?;
     }
-
     tx.commit().await?;
-
     Ok(())
 }
 
 #[delete("/file/<path>")]
 async fn delete_file(state: &State<AppState>, path: &str, _user: AuthAdmin) -> Result<(), Error> {
-    let target_path = get_target_path(state, path).map_err(|e| {
-        eprintln!("{}", e);
-        return 400;
-    })?;
-
-    if target_path.is_file() {
-        fs::remove_file(target_path).await?;
-    } else {
-        fs::remove_dir_all(target_path).await?;
-    }
-
+    let path = virtual_path(path)?;
+    Storage::from_state(state)?.remove(&path).await?;
     let mut conn = state.get_pool_conn().await?;
     let mut tx = conn.begin().await?;
-    Hidden::delete_all_sub_path_query(&mut tx, path).await?;
+    // instr uses a literal prefix; '%' and '_' in filenames are not wildcards.
+    sqlx::query("DELETE FROM hidden WHERE path = ? OR instr(path, ?) = 1")
+        .bind(&path)
+        .bind(format!("{path}/"))
+        .execute(&mut tx)
+        .await?;
     tx.commit().await?;
-
     Ok(())
 }
 
-// Temporary solution for track file searching.
-// Could remove this function in the future.
 #[get("/file/track/<path>")]
-async fn video_track(
-    path: &str,
-    _user: AuthUser,
-    state: &State<AppState>,
-) -> Result<String, Error> {
-    let storage = state.get_site()?.storage.clone();
-    let target_path = PathBuf::from(storage).join(&util::parse_encoded_url(path)?);
-
-    let track_str = match track::get_track(target_path).await {
-        Ok(str) => str,
-        Err(e) => {
-            eprintln!("Error when getting track: {}", e);
-            return Err(Error::NotFound);
-        }
-    };
-
-    Ok(track_str)
+async fn video_track(path: &str, user: AuthUser, state: &State<AppState>) -> Result<String, Error> {
+    let path = virtual_path(path)?;
+    let storage = Storage::from_state(state)?;
+    let mut target = path.clone();
+    if storage.stat(&target).await?.is_none() {
+        target = Path::new(&path)
+            .with_extension("srt")
+            .to_string_lossy()
+            .into();
+    }
+    authorize(state, &target, &user).await?;
+    let meta = storage.stat(&target).await?.ok_or(Error::NotFound)?;
+    if meta.is_dir || meta.size > 1024 * 1024 {
+        return Err(Error::BadRequest);
+    }
+    let file = storage.materialize(&target).await?;
+    let text = util::file_system::read_text_file(file.path.clone()).await?;
+    if target.ends_with(".srt") {
+        Ok(track::srt_to_vtt(&text).await?)
+    } else {
+        Ok(text)
+    }
 }
 
 #[post("/file/share", data = "<req_body>")]
 async fn generate_share_link(
     state: &State<AppState>,
     req_body: Json<GenerateLinkRequest>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> Result<String, Error> {
-    let secret = state.get_secret()?;
-    let path_encode = urlencoding::encode(&req_body.path);
-    let input = format!("expire={}&path={}", req_body.expire, path_encode);
-    let hash = util::sha256(&input, &secret);
-
+    let path = encoded_path(&req_body.path)?;
+    authorize(state, &path, &user).await?;
+    if req_body.expire <= util::get_utc_seconds()
+        || !Storage::from_state(state)?
+            .stat(&path)
+            .await?
+            .map(|m| !m.is_dir)
+            .unwrap_or(false)
+    {
+        return Err(Error::BadRequest);
+    }
+    let path = urlencoding::encode(&path);
+    let input = format!("expire={}&path={}", req_body.expire, path);
+    let hash = util::sha256(&input, &state.get_secret()?);
     Ok(format!("hash={}&{}", hash, input))
 }
 
@@ -278,30 +263,15 @@ async fn get_share_link(
     hash: &str,
     range_header: Range,
 ) -> Result<FileResponse, Error> {
-    let secret = state.get_secret()?;
-    let path_encode = urlencoding::encode(path);
-
-    let input = format!("expire={}&path={}", expire, path_encode);
-    if hash != util::sha256(&input, &secret) {
-        return Err(Error::BadRequest);
+    let path = virtual_path(path)?;
+    if expire <= util::get_utc_seconds() {
+        return Err(Error::Forbidden);
     }
-
-    let target_path = get_target_path(state, path).map_err(|e| {
-        eprintln!("{}", e);
-        return 400;
-    })?;
-
-    if !target_path.is_file() {
-        return Err(Error::BadRequest);
+    let input = format!("expire={}&path={}", expire, urlencoding::encode(&path));
+    if hash != util::sha256(&input, &state.get_secret()?) {
+        return Err(Error::Forbidden);
     }
-
-    match range_header.range {
-        Some(range) => {
-            let ranged_file = RangedFile::new(range, target_path).await?;
-            Ok(FileResponse::Range(ranged_file))
-        }
-        None => Ok(FileResponse::Binary(NamedFile::open(target_path).await?)),
-    }
+    serve_file(Storage::from_state(state)?, &path, range_header, false).await
 }
 
 #[get("/file/search?<keywords>")]
@@ -310,12 +280,40 @@ async fn search_files(
     keywords: &str,
     user: AuthUser,
 ) -> Result<Json<Vec<File>>, Error> {
-    let decoded_keywords = util::parse_encoded_url(keywords)?;
-    let decoded_keywords_str = decoded_keywords.as_os_str().to_str().unwrap();
-    let keywords_splits: Vec<&str> = decoded_keywords_str.split("+").collect();
-    let results = search_dir_all(state, &keywords_splits, user.permission).await?;
-
-    Ok(Json(results))
+    let storage = Storage::from_state(state)?;
+    let mut conn = state.get_pool_conn().await?;
+    let hiddens = Hidden::find_all(&mut conn).await?;
+    let keywords: Vec<String> = keywords.split('+').map(str::to_lowercase).collect();
+    let mut directories = vec![String::new()];
+    let mut files = vec![];
+    while let Some(directory) = directories.pop() {
+        for entry in storage.list(&directory).await? {
+            let required = permission(&entry.path, &hiddens);
+            if required > user.permission {
+                continue;
+            }
+            if entry.is_dir {
+                directories.push(entry.path.clone());
+            }
+            let name = Path::new(&entry.path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            if keywords.iter().all(|word| {
+                name.contains(word)
+                    && (!word.starts_with('.')
+                        || (!entry.is_dir
+                            && name
+                                .rsplit_once('.')
+                                .map(|(_, ext)| format!(".{ext}") == *word)
+                                .unwrap_or(false)))
+            }) {
+                files.push(entry.file(true, required));
+            }
+        }
+    }
+    Ok(Json(files))
 }
 
 #[post("/file/copy-move", data = "<req_body>")]
@@ -324,180 +322,206 @@ async fn copy_move_file(
     admin: AuthAdmin,
     req_body: Json<CopyMoveFileRequest>,
 ) -> Result<String, Error> {
-    if !CopyMoveTask::allow_new_task() {
-        eprintln!("Copy or move task is already running.");
+    let _settings_lock = state.storage_settings_lock.lock().await;
+    let source = encoded_path(&req_body.source)?;
+    let target = encoded_path(&req_body.target)?;
+    let storage = Storage::from_state(state)?;
+    if !storage
+        .stat(&target)
+        .await?
+        .map(|m| m.is_dir)
+        .unwrap_or(false)
+    {
         return Err(Error::BadRequest);
     }
-
-    let source = get_target_path(state, &req_body.source)?;
-    let target = get_target_path(state, &req_body.target)?;
+    let name = Path::new(&source)
+        .file_name()
+        .ok_or(Error::BadRequest)?
+        .to_string_lossy();
+    let destination = storage::join(&target, &name).map_err(|_| Error::BadRequest)?;
     let task = CopyMoveTask::new(
-        source,
-        target,
+        source.clone().into(),
+        destination.clone().into(),
         admin.uid,
         req_body.is_copy,
         req_body.overwrite,
     );
-    task.set_static_value();
-    task.run();
+    {
+        let mut current = crate::COPY_MOVE_TASK
+            .lock()
+            .map_err(|_| Error::InternalServerError)?;
+        if current
+            .as_ref()
+            .map(|t| {
+                t.status == CopyMoveTaskStatus::Pending
+                    || t.status == CopyMoveTaskStatus::InProgress
+            })
+            .unwrap_or(false)
+        {
+            return Err(Error::Conflict);
+        }
+        *current = Some(task.clone());
+    }
+    let uuid = task.uuid.clone();
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        task.update_progress(0.0, CopyMoveTaskStatus::InProgress);
+        let result: AnyResult<()> = async {
+            storage
+                .transfer_with_hook(&source, &destination, task.is_copy, task.overwrite, || {
+                    sync_visibility(&pool, &source, &destination)
+                })
+                .await?;
+            if !task.is_copy {
+                remove_source_visibility(&pool, &source).await?;
+            }
+            Ok(())
+        }
+        .await;
+        match result {
+            Ok(()) => task.update_progress(1.0, CopyMoveTaskStatus::Success),
+            Err(_) => {
+                eprintln!(
+                    "Storage copy/move failed; source is retained unless the transfer completed"
+                );
+                task.update_progress(0.0, CopyMoveTaskStatus::Failed);
+            }
+        }
+    });
+    Ok(uuid)
+}
 
-    Ok(task.uuid.clone())
+async fn sync_visibility(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    source: &str,
+    destination: &str,
+) -> AnyResult<()> {
+    let mut conn = pool.acquire().await?;
+    let hidden = Hidden::find_all(&mut conn).await?;
+    let inherited = permission(source, &hidden);
+    let mut tx = conn.begin().await?;
+    if inherited > 0 {
+        Hidden::new(destination, inherited)
+            .insert_query(&mut tx)
+            .await?;
+    }
+    for hidden in hidden
+        .iter()
+        .filter(|h| h.path == source || h.path.starts_with(&format!("{source}/")))
+    {
+        let new_path = format!("{}{}", destination, &hidden.path[source.len()..]);
+        Hidden::new(&new_path, hidden.least_permission)
+            .insert_query(&mut tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn remove_source_visibility(pool: &sqlx::Pool<sqlx::Sqlite>, source: &str) -> AnyResult<()> {
+    sqlx::query("DELETE FROM hidden WHERE path = ? OR instr(path, ?) = 1")
+        .bind(source)
+        .bind(format!("{source}/"))
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[get("/file/copy-move-status/<uuid>")]
 async fn get_copy_move_status(uuid: String, admin: AuthAdmin) -> Result<Json<CopyMoveTask>, Error> {
-    let task = CopyMoveTask::get_static_value();
-    if task.is_none() || task.as_ref().unwrap().uuid != uuid {
-        return Err(Error::NotFound);
+    let mut task = CopyMoveTask::get_static_value()
+        .filter(|t| t.uuid == uuid)
+        .ok_or(Error::NotFound)?;
+    if task.user_id != admin.uid {
+        return Err(Error::Unauthorized);
     }
+    task.user_id = 0;
+    Ok(Json(task))
+}
 
-    if task.as_ref().unwrap().user_id != admin.uid {
+#[get("/download/dir?<path>")]
+async fn download_dir(
+    path: &str,
+    _user: AuthAdmin,
+    state: &State<AppState>,
+) -> Result<ByteStream![Vec<u8>], Error> {
+    let path = virtual_path(path)?;
+    let storage = Storage::from_state(state)?;
+    if !storage
+        .stat(&path)
+        .await?
+        .map(|m| m.is_dir)
+        .unwrap_or(false)
+    {
         return Err(Error::BadRequest);
     }
-
-    let mut task_res = task.unwrap();
-    task_res.user_id = 0;
-
-    Ok(Json(task_res))
-}
-
-fn get_target_path(state: &State<AppState>, path: &str) -> AnyResult<PathBuf> {
-    let storage = state.get_site()?.storage.clone();
-    let target_path = PathBuf::from(&storage).join(&util::parse_encoded_url(path)?);
-
-    if !target_path.exists() {
-        return Err(anyhow::anyhow!("Invalid path: {:?}", target_path));
-    }
-
-    Ok(target_path)
-}
-
-fn get_relative_path(state: &State<AppState>, full_path: &PathBuf) -> AnyResult<PathBuf> {
-    let storage = state.get_site()?.storage.clone();
-    let relative_path = full_path.strip_prefix(storage)?;
-
-    Ok(relative_path.to_owned())
-}
-
-async fn search_dir_all(
-    state: &State<AppState>,
-    keywords: &Vec<&str>,
-    user_permission: i8,
-) -> AnyResult<Vec<File>> {
-    let mut results = vec![];
-    let mut conn = state.get_pool_conn().await?;
-    let hiddens = Hidden::find_all(&mut conn).await?;
-    let storage = state.get_site()?.storage.clone();
-
-    for entry in WalkDir::new(&storage).follow_links(false).into_iter() {
-        let entry = entry?;
-        let path = entry.path();
-        if contains_all_keywords(path, keywords)
-            && max_permission_parent(&path.to_owned(), &storage, &hiddens) <= user_permission
-        {
-            let path_buf = PathBuf::from(path);
-            let file = File::from_path(&path_buf, true, &storage, 0)?;
-            results.push(file);
+    let (mut writer, mut reader) = tokio::io::duplex(util::constants::ZIP_BUFFER_SIZE);
+    let task = tokio::spawn(async move {
+        if zip_dir(&mut writer, storage, &path).await.is_err() {
+            eprintln!("Directory download failed or was disconnected");
+        }
+    });
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
         }
     }
-
-    Ok(results)
-}
-
-// Check the permission setting for the exact input file path only.
-fn get_least_permission(file_path: &PathBuf, storage: &str, hiddens: &Vec<Hidden>) -> i8 {
-    let storage_path = PathBuf::from(storage);
-
-    for hidden in hiddens.iter() {
-        let hidden_full_path = storage_path.join(&hidden.path);
-
-        if &hidden_full_path == file_path {
-            return hidden.least_permission;
-        }
-    }
-
-    0
-}
-
-// Check the max permission value of all the parents of the input file path.
-fn max_permission_parent(file_path: &PathBuf, storage: &str, hiddens: &Vec<Hidden>) -> i8 {
-    let mut least_permission = 0;
-    let storage_path = PathBuf::from(storage);
-
-    for hidden in hiddens.iter() {
-        let hidden_full_path = storage_path.join(&hidden.path);
-
-        if file_path.starts_with(&hidden_full_path) && hidden.least_permission > least_permission {
-            least_permission = hidden.least_permission;
-        }
-    }
-
-    least_permission
-}
-
-// All keywords are lower case before sending to backend
-fn contains_all_keywords(path: &Path, keywords: &Vec<&str>) -> bool {
-    let filename = path.file_name().unwrap().to_str().unwrap().to_lowercase();
-    for keyword in keywords.iter() {
-        let keyword_low = keyword.to_lowercase();
-        if !filename.contains(&keyword_low) {
-            return false;
-        }
-
-        // Keywords start with "." indicates a filter for file type.
-        // Eg. ".js" means searching for js files, and json files should be excluded.
-        if keyword_low.starts_with(".") {
-            if path.is_dir() {
-                return false;
+    let cleanup = AbortOnDrop(task);
+    Ok(ByteStream! {
+        let _cleanup = cleanup;
+        loop {
+            let mut buffer = vec![0; util::constants::ZIP_BUFFER_SIZE];
+            match reader.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(size) => { buffer.truncate(size); yield buffer; }
             }
-
-            match path.extension() {
-                Some(ext) => {
-                    let ext_str = ext.to_str().unwrap();
-                    let ext_str_dot = format!(".{}", ext_str);
-                    if ext_str_dot != keyword_low {
-                        return false;
-                    }
-                }
-                None => return false,
-            };
         }
-    }
-
-    return true;
+    })
 }
 
 async fn zip_dir<W: AsyncWrite + Unpin>(
     writer: &mut W,
-    path: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut writer = ZipFileWriter::new(writer);
-    let mut it = WalkDir::new(path).into_iter();
-    while let Some(Ok(entry)) = it.next() {
-        if !entry.file_type().is_file() {
-            continue;
+    storage: Storage,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut zip = ZipFileWriter::new(writer);
+    let prefix = Path::new(path)
+        .parent()
+        .unwrap_or(Path::new(""))
+        .to_string_lossy()
+        .to_string();
+    let mut pending = vec![path.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in storage.list(&directory).await? {
+            let filename = if prefix.is_empty() {
+                entry.path.clone()
+            } else {
+                entry
+                    .path
+                    .strip_prefix(&format!("{prefix}/"))
+                    .ok_or_else(|| anyhow!("Invalid archive path"))?
+                    .to_owned()
+            };
+            if entry.is_dir {
+                let directory_entry =
+                    ZipEntryBuilder::new(format!("{filename}/"), Compression::Stored)
+                        .unix_permissions(0o755);
+                zip.write_entry_whole(directory_entry, &[]).await?;
+                pending.push(entry.path);
+            } else {
+                let file = storage.materialize(&entry.path).await?;
+                let mut source = tokio::fs::File::open(&file.path).await?;
+                let mut sink = zip
+                    .write_entry_stream(
+                        ZipEntryBuilder::new(filename, Compression::Stored).unix_permissions(0o644),
+                    )
+                    .await?;
+                tokio::io::copy(&mut source, &mut sink).await?;
+                sink.close().await?;
+            }
         }
-
-        if entry.path().symlink_metadata().is_err() {
-            continue;
-        }
-
-        let parent_dir = match path.parent() {
-            Some(p) => p,
-            None => path,
-        };
-        let filename = match entry.path().strip_prefix(&parent_dir) {
-            Ok(v) => v.to_str().unwrap(),
-            Err(_) => continue,
-        };
-        let entry_op =
-            ZipEntryBuilder::new(filename.to_owned(), Compression::Stored).unix_permissions(0o644);
-        let mut file = tokio::fs::File::open(entry.path()).await?;
-        let mut file_writer = writer.write_entry_stream(entry_op).await?;
-        io::copy(&mut file, &mut file_writer).await?;
-        file_writer.close().await?;
     }
-
-    writer.close().await?;
+    zip.close().await?;
     Ok(())
 }

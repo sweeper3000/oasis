@@ -52,6 +52,10 @@ async function uploadFile(task: IUploadTask, hash: string) {
   if (!task.uuid || !task.hash) return;
 
   const file = task.file;
+  if (file.size === 0) {
+    await finishUpload(task);
+    return;
+  }
   let start = 0;
   const worker = new Worker("/js/upload_worker.js");
   pushWorker(worker);
@@ -80,6 +84,7 @@ async function uploadFile(task: IUploadTask, hash: string) {
 
   worker.onerror = (e) => {
     updateTask(task.file, EUploadStatus.failed, task.progress);
+    cancelUploads([task]).catch(console.error);
     worker.terminate();
     removeWorker(worker);
     throw e;

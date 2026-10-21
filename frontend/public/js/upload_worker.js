@@ -12,6 +12,9 @@ self.onmessage = async (e) => {
   xhr.open('POST', endpoint);
 
   xhr.onload = (_) => {
+    if (xhr.status < 200 || xhr.status >= 300) {
+      throw new Error(`Upload failed (${xhr.status})`);
+    }
     self.postMessage(end);
   }
 

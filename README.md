@@ -19,6 +19,19 @@ A self-hosted file server.
 
 ### Docker
 
+To build and run this checkout with external storage support:
+
+```sh
+docker compose -f compose.example.yaml up --build -d
+```
+
+Open http://localhost:8000 and choose `/home/storage` during initial setup.
+Configure providers in **Settings → External storage**. The example persists
+settings and local files, and includes rclone. See [Compose setup](doc/external-storage.md#docker-compose)
+for encryption, certificates, and network configuration.
+
+The published image below may not yet include changes from this branch:
+
 https://hub.docker.com/r/machengim/oasis
 
 ```
@@ -31,7 +44,7 @@ docker run --name oasis -t -d \
 ### Build
 
 - Node 14+
-- Rust 1.54+
+- Rust 1.85+
 
 ```
 cd path/to/oasis
@@ -45,6 +58,16 @@ node build.js
 - Media file play list
 - File external link
 - I18n (English, Chinese)
+- External storage: S3, SFTP, FTPS, FTP, WebDAV and SMB, with optional AES-256 encryption
+
+### External storage
+
+Configure providers in **Settings → External storage**. Use an external provider
+as the main drive, or show named external folders beside local files. Install
+rclone 1.71+ on the server (included by the Dockerfile).
+
+See [external storage configuration](doc/external-storage.md) for protocol setup,
+encryption keys, deployment requirements and temporary-file handling.
 
 ### File format support
 
