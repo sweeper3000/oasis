@@ -7,6 +7,7 @@ use super::site::Site;
 #[derive(Responder)]
 pub enum FileResponse {
     Storage(StorageFile),
+    Video(crate::storage::stream::VideoResponse),
     Text(String),
 }
 

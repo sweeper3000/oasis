@@ -21,11 +21,27 @@ pub struct StorageFile {
     range: Option<ByteRange>,
 }
 
+pub fn content_type(filename: &str) -> ContentType {
+    let extension = std::path::Path::new(filename)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "mkv" => ContentType::new("video", "x-matroska"),
+        "avi" => ContentType::new("video", "x-msvideo"),
+        "flv" => ContentType::new("video", "x-flv"),
+        "wmv" => ContentType::new("video", "x-ms-wmv"),
+        _ => ContentType::from_extension(&extension).unwrap_or(ContentType::Binary),
+    }
+}
+
 // The response body owns the temporary directory, including on client disconnect.
 // Field order closes the file before removing its directory (also on Windows).
 struct OwnedReader {
     file: Take<File>,
     _workspace: Option<Workspace>,
+    _cache_lease: Option<super::cache::Lease>,
 }
 impl AsyncRead for OwnedReader {
     fn poll_read(
@@ -57,11 +73,7 @@ impl<'r> Responder<'r, 'static> for StorageFile {
             .metadata()
             .map_err(|_| Status::InternalServerError)?
             .len();
-        let content_type = std::path::Path::new(&self.filename)
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(ContentType::from_extension)
-            .unwrap_or(ContentType::Binary);
+        let content_type = content_type(&self.filename);
         let mut response = Response::build();
         response
             .header(content_type)
@@ -88,6 +100,7 @@ impl<'r> Responder<'r, 'static> for StorageFile {
         let reader = OwnedReader {
             file: File::from_std(file).take(length),
             _workspace: self.materialized.workspace,
+            _cache_lease: self.materialized.cache_lease,
         };
         response
             .raw_header("Content-Length", length.to_string())
@@ -116,6 +129,7 @@ mod tests {
             Materialized {
                 path,
                 workspace: Some(workspace),
+                cache_lease: None,
             },
             "report.txt".into(),
             range.range,

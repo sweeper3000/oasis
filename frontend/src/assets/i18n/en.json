@@ -149,7 +149,7 @@
       "key_warning": "Back up this key. Changing or losing it makes existing files unreadable. Oasis rejects key changes for an existing encrypted namespace; moving data to a new key requires a separate migration.",
       "remove": "Remove provider from Oasis",
       "add": "Add provider",
-      "temporary_help": "Temporary server copies are removed when an operation or response ends, including failed operations. Abandoned uploads expire after one hour. Provider files remain until you delete or move them. Requires rclone 1.71+ on the server.",
+      "temporary_help": "Remote videos stream without disk staging. Other requested remote files are cached as plaintext until unused for 24 hours, with no size cap; restart clears this cache. Operation staging is removed when finished, and abandoned uploads expire after one hour. Provider files remain until you delete or move them. Requires rclone 1.71+ on the server.",
       "test": "Test connections",
       "save": "Save storage settings",
       "working": "Working...",

@@ -1,7 +1,9 @@
+pub mod cache;
 pub mod config;
 pub mod crypto;
 pub mod remote;
 pub mod response;
+pub mod stream;
 
 use crate::{
     entity::file::{File, FileType},
@@ -25,11 +27,24 @@ impl Workspace {
     pub fn path(&self) -> &Path {
         self.0.path()
     }
+    fn cached() -> Result<Self> {
+        let root = crate::util::get_temp_path().join("file-cache");
+        std::fs::create_dir_all(&root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(Self(
+            tempfile::Builder::new().prefix("entry-").tempdir_in(root)?,
+        ))
+    }
 }
 
 pub struct Materialized {
     pub path: PathBuf,
     pub workspace: Option<Workspace>,
+    pub cache_lease: Option<cache::Lease>,
 }
 
 #[derive(Clone)]
@@ -67,6 +82,7 @@ impl Metadata {
 pub struct Storage {
     pub local: String,
     pub config: StorageConfig,
+    pub cache: std::sync::Arc<cache::Cache>,
 }
 
 enum Target {
@@ -121,6 +137,7 @@ impl Storage {
         Ok(Self {
             local: state.get_site()?.storage.clone(),
             config: state.get_storage_config()?,
+            cache: state.file_cache.clone(),
         })
     }
 
@@ -292,6 +309,7 @@ impl Storage {
             Target::Local(target) => Ok(Materialized {
                 path: target,
                 workspace: None,
+                cache_lease: None,
             }),
             Target::Remote(provider, relative) => {
                 let workspace = Workspace::new()?;
@@ -309,8 +327,30 @@ impl Storage {
                 Ok(Materialized {
                     path,
                     workspace: Some(workspace),
+                    cache_lease: None,
                 })
             }
+        }
+    }
+
+    pub async fn cached_file(&self, path: &str) -> Result<Materialized> {
+        match self.target(path)? {
+            Target::Local(_) => self.materialize(path).await,
+            Target::Remote(provider, relative) => self.cache.get(provider, &relative).await,
+        }
+    }
+
+    pub async fn remote_video(
+        &self,
+        path: &str,
+        range: Option<crate::service::range::ByteRange>,
+        head: bool,
+    ) -> Result<Option<stream::VideoResponse>> {
+        match self.target(path)? {
+            Target::Local(_) => Ok(None),
+            Target::Remote(provider, relative) => Ok(Some(
+                stream::VideoResponse::open(provider, &relative, path, range, head).await?,
+            )),
         }
     }
 
@@ -332,6 +372,7 @@ impl Storage {
                     .map_err(|e| anyhow!("Could not commit upload: {}", e.error))?;
             }
             Target::Remote(provider, relative) => {
+                let _invalidate = self.cache.mutation(&provider, &relative)?;
                 let remote = Remote::new(provider.clone()).await?;
                 if let Some(key) = provider.key()? {
                     let workspace = Workspace::new()?;
@@ -364,6 +405,7 @@ impl Storage {
                 }
             }
             Target::Remote(provider, relative) => {
+                let _invalidate = self.cache.mutation(&provider, &relative)?;
                 let remote = Remote::new(provider).await?;
                 remote.remove(&relative, meta.is_dir).await?;
             }
@@ -481,6 +523,7 @@ mod tests {
         let storage = Storage {
             local: root.path().to_string_lossy().into(),
             config: StorageConfig::default(),
+            cache: Default::default(),
         };
         let input = root.path().join("input.txt");
         tokio::fs::write(&input, b"hello").await.unwrap();
@@ -539,6 +582,7 @@ mod tests {
         let storage = Storage {
             local: root.path().to_string_lossy().into(),
             config: StorageConfig::default(),
+            cache: Default::default(),
         };
         assert!(storage.stat("escape/secret").await.is_err());
         assert!(storage.list("escape").await.is_err());

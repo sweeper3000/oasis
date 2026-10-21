@@ -206,7 +206,7 @@ class Harness:
 
     def cleaned(self):
         for _ in range(50):
-            if not list((self.appdir / "temp").iterdir()):
+            if not [p for p in (self.appdir / "temp").iterdir() if p.name != "file-cache"]:
                 return
             time.sleep(0.05)
         raise AssertionError("Temporary files remain: %s" % list((self.appdir / "temp").iterdir()))

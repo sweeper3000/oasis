@@ -190,6 +190,7 @@ async fn download_export(
         Materialized {
             path: workspace.path().join("archive"),
             workspace: Some(workspace),
+            cache_lease: None,
         },
         "oasis-database.oasis-backup".into(),
         None,

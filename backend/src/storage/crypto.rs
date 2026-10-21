@@ -18,7 +18,69 @@ use tokio::{
 
 pub const CHUNK: usize = 64 * 1024;
 const MAGIC: &[u8; 8] = b"OASISA01";
-const HEADER: usize = 48; // magic + 256-bit HKDF salt + u64 length
+pub const HEADER: usize = 48; // magic + 256-bit HKDF salt + u64 length
+
+/// Random-access decoding of the existing STREAM format. The chunk index and
+/// final flag must match encryption; no plaintext leaves this function unverified.
+pub struct FileDecoder {
+    header: [u8; HEADER],
+    cipher: aead::stream::StreamBE32<Aes256Gcm>,
+    pub size: u64,
+}
+
+impl FileDecoder {
+    pub fn new(key: &[u8; 32], header: [u8; HEADER], encrypted_size: u64) -> Result<Self> {
+        use aead::stream::NewStream;
+        ensure!(&header[..8] == MAGIC, "Invalid encrypted video header");
+        let size = u64::from_be_bytes(header[40..48].try_into()?);
+        ensure!(
+            size / (CHUNK as u64) < u32::MAX as u64,
+            "Encrypted file is too large"
+        );
+        ensure!(
+            plaintext_size(encrypted_size)? == size,
+            "Encrypted file framing changed"
+        );
+        let key = content_key(key, &header[8..40]);
+        Ok(Self {
+            header,
+            cipher: aead::stream::StreamBE32::new((&key).into(), (&[0; 7]).into()),
+            size,
+        })
+    }
+
+    pub fn last_index(&self) -> u64 {
+        self.size / CHUNK as u64
+    }
+
+    pub fn chunk_size(&self, index: u64) -> usize {
+        if index == self.last_index() {
+            (self.size % CHUNK as u64) as usize
+        } else {
+            CHUNK
+        }
+    }
+
+    pub fn decrypt(&self, index: u64, bytes: &[u8]) -> Result<Vec<u8>> {
+        use aead::stream::StreamPrimitive;
+        ensure!(
+            index <= self.last_index() && bytes.len() == self.chunk_size(index) + 16,
+            "Invalid encrypted chunk"
+        );
+        self.cipher
+            .decrypt(
+                index.try_into()?,
+                index == self.last_index(),
+                Payload {
+                    msg: bytes,
+                    aad: &self.header,
+                },
+            )
+            .map_err(|_| {
+                anyhow!("Video authentication failed; data is corrupt or the key is incorrect")
+            })
+    }
+}
 
 fn content_key(key: &[u8; 32], salt: &[u8]) -> [u8; 32] {
     let mut output = [0; 32];
@@ -212,6 +274,46 @@ pub async fn decrypt_file(key: &[u8; 32], source: &Path, target: &Path) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn random_access_chunks_match_full_decryption_and_authenticate_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("ciphertext");
+        for size in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, CHUNK * 3] {
+            let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            tokio::fs::write(&source, &data).await.unwrap();
+            encrypt_file(&[11; 32], &source, &target).await.unwrap();
+            let bytes = tokio::fs::read(&target).await.unwrap();
+            let header: [u8; HEADER] = bytes[..HEADER].try_into().unwrap();
+            let decoder = FileDecoder::new(&[11; 32], header, bytes.len() as u64).unwrap();
+            for index in (0..=decoder.last_index()).rev() {
+                let offset = HEADER + index as usize * (CHUNK + 16);
+                let chunk = &bytes[offset..offset + decoder.chunk_size(index) + 16];
+                let start = index as usize * CHUNK;
+                assert_eq!(
+                    decoder.decrypt(index, chunk).unwrap(),
+                    data[start..(start + CHUNK).min(size)]
+                );
+                let mut altered = chunk.to_vec();
+                altered[0] ^= 1;
+                assert!(decoder.decrypt(index, &altered).is_err());
+                assert!(decoder.decrypt(index, &chunk[..chunk.len() - 1]).is_err());
+                if index > 0 && chunk.len() == CHUNK + 16 {
+                    assert!(decoder.decrypt(index - 1, chunk).is_err());
+                }
+                let wrong = FileDecoder::new(&[12; 32], header, bytes.len() as u64).unwrap();
+                assert!(wrong.decrypt(index, chunk).is_err());
+            }
+            let mut changed_header = header;
+            changed_header[8] ^= 1;
+            let wrong = FileDecoder::new(&[11; 32], changed_header, bytes.len() as u64).unwrap();
+            assert!(wrong
+                .decrypt(0, &bytes[HEADER..HEADER + decoder.chunk_size(0) + 16])
+                .is_err());
+            assert!(FileDecoder::new(&[11; 32], header, bytes.len() as u64 - 1).is_err());
+        }
+    }
 
     #[tokio::test]
     async fn authenticated_round_trips_and_rejects_tampering() {

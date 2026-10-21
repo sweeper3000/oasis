@@ -5,6 +5,7 @@ use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex, MutexGuard};
 
 #[derive(Clone)]
 pub struct AppState {
+    pub file_cache: Arc<crate::storage::cache::Cache>,
     pub operations: Arc<tokio::sync::RwLock<()>>,
     pub backups: Arc<crate::service::backup::BackupManager>,
     pub storage: Arc<Mutex<crate::storage::config::StorageConfig>>,
@@ -24,6 +25,7 @@ impl AppState {
         };
 
         Self {
+            file_cache: Arc::new(crate::storage::cache::Cache::default()),
             operations: Arc::new(tokio::sync::RwLock::new(())),
             backups: Arc::new(crate::service::backup::BackupManager::default()),
             storage: Arc::new(Mutex::new(crate::storage::config::StorageConfig::default())),
@@ -47,6 +49,7 @@ impl AppState {
         &self,
         config: crate::storage::config::StorageConfig,
     ) -> AnyResult<()> {
+        self.file_cache.clear();
         *self
             .storage
             .lock()
@@ -56,10 +59,12 @@ impl AppState {
 
     pub fn start_upload_reaper(&self) {
         let uploads = self.uploads.clone();
+        let cache = self.file_cache.clone();
         tokio::spawn(async move {
             let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 timer.tick().await;
+                cache.reap();
                 if let Ok(mut tasks) = uploads.lock() {
                     let cutoff = crate::util::get_utc_seconds() - 3600;
                     tasks.retain(|task| {

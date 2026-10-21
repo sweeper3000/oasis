@@ -32,9 +32,11 @@ pub fn route() -> Vec<Route> {
         update_file_name,
         delete_file,
         file_content,
+        file_head,
         video_track,
         generate_share_link,
         get_share_link,
+        share_head,
         search_files,
         update_file_visibility,
         copy_move_file,
@@ -112,14 +114,29 @@ async fn serve_file(
     path: &str,
     range: Range,
     text_preview: bool,
+    head: bool,
 ) -> Result<FileResponse, Error> {
-    let file = storage.materialize(path).await?;
     let kind = FileType::infer_file_type(
         Path::new(path)
             .extension()
             .and_then(|p| p.to_str())
             .unwrap_or(""),
     );
+    if kind == FileType::Video {
+        if let Some(response) = storage.remote_video(path, range.range, head).await? {
+            return Ok(FileResponse::Video(response));
+        }
+    }
+    if head {
+        let metadata = storage.stat(path).await?.ok_or(Error::NotFound)?;
+        if metadata.is_dir {
+            return Err(Error::BadRequest);
+        }
+        return Ok(FileResponse::Video(
+            storage::stream::VideoResponse::metadata(metadata.size, path, range.range),
+        ));
+    }
+    let file = storage.cached_file(path).await?;
     if range.range.is_none() && text_preview && kind == FileType::Text {
         let text = util::file_system::read_text_file(file.path.clone()).await?;
         return Ok(FileResponse::Text(text));
@@ -144,7 +161,26 @@ async fn file_content(
 ) -> Result<FileResponse, Error> {
     let path = virtual_path(path)?;
     authorize(state, &path, &user).await?;
-    serve_file(Storage::from_state(state)?, &path, range_header, true).await
+    serve_file(
+        Storage::from_state(state)?,
+        &path,
+        range_header,
+        true,
+        false,
+    )
+    .await
+}
+
+#[head("/file/<path>")]
+async fn file_head(
+    path: &str,
+    user: AuthUser,
+    state: &State<AppState>,
+    range_header: Range,
+) -> Result<FileResponse, Error> {
+    let path = virtual_path(path)?;
+    authorize(state, &path, &user).await?;
+    serve_file(Storage::from_state(state)?, &path, range_header, true, true).await
 }
 
 #[put("/file/<path>/name", data = "<req_body>")]
@@ -223,7 +259,7 @@ async fn video_track(path: &str, user: AuthUser, state: &State<AppState>) -> Res
     if meta.is_dir || meta.size > 1024 * 1024 {
         return Err(Error::BadRequest);
     }
-    let file = storage.materialize(&target).await?;
+    let file = storage.cached_file(&target).await?;
     let text = util::file_system::read_text_file(file.path.clone()).await?;
     if target.ends_with(".srt") {
         Ok(track::srt_to_vtt(&text).await?)
@@ -263,6 +299,28 @@ async fn get_share_link(
     hash: &str,
     range_header: Range,
 ) -> Result<FileResponse, Error> {
+    serve_share(state, path, expire, hash, range_header, false).await
+}
+
+#[head("/file/share?<path>&<expire>&<hash>")]
+async fn share_head(
+    state: &State<AppState>,
+    path: &str,
+    expire: i64,
+    hash: &str,
+    range_header: Range,
+) -> Result<FileResponse, Error> {
+    serve_share(state, path, expire, hash, range_header, true).await
+}
+
+async fn serve_share(
+    state: &State<AppState>,
+    path: &str,
+    expire: i64,
+    hash: &str,
+    range_header: Range,
+    head: bool,
+) -> Result<FileResponse, Error> {
     let path = virtual_path(path)?;
     if expire <= util::get_utc_seconds() {
         return Err(Error::Forbidden);
@@ -271,7 +329,14 @@ async fn get_share_link(
     if hash != util::sha256(&input, &state.get_secret()?) {
         return Err(Error::Forbidden);
     }
-    serve_file(Storage::from_state(state)?, &path, range_header, false).await
+    serve_file(
+        Storage::from_state(state)?,
+        &path,
+        range_header,
+        false,
+        head,
+    )
+    .await
 }
 
 #[get("/file/search?<keywords>")]

@@ -101,13 +101,20 @@
   };
 
   const initMediaSource = () => {
-    const mediaSrcType = getMediaType() === "video" ? "video/mp4" : "audio/mp3";
+    const mediaSrcType = getMediaType() === "video" ? videoMime() : "audio/mp3";
     return [
       {
         src: filePath,
         type: mediaSrcType,
       },
     ];
+  };
+
+  const videoMime = () => {
+    const extension = filePath.split("?")[0].split(".").pop().toLowerCase();
+    return ({ mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
+      mkv: "video/x-matroska", avi: "video/x-msvideo", flv: "video/x-flv",
+      wmv: "video/x-ms-wmv" } as Record<string, string>)[extension] || "application/octet-stream";
   };
 
   const onFullScreen = async () => {
@@ -150,7 +157,7 @@
         on:canplay={onSvideoCanplay}
         on:ended={onSvideoEnd}
       >
-        <source src={filePath} type="video/mp4" />
+        <source src={filePath} type={videoMime()} />
       </video>
     {:else}
       <video
@@ -161,7 +168,7 @@
         controls
         loop={isLoop}
       >
-        <source type="video/mp4" />
+        <source type={videoMime()} />
         <track kind="captions" default />
       </video>
     {/if}

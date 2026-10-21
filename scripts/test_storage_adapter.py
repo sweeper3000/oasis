@@ -13,6 +13,12 @@ args = sys.argv[1:]
 with (root / "adapter-calls.jsonl").open("a") as log:
     log.write(json.dumps(args) + "\n")
 
+if args and args[0] == "cat":
+    with (root / "adapter-cat-pids.jsonl").open("a") as log:
+        log.write(json.dumps({"pid": os.getpid(), "args": args}) + "\n")
+    # Preserve streaming and cancellation instead of buffering video in Python.
+    os.execvpe(os.environ["OASIS_TEST_RCLONE"], [os.environ["OASIS_TEST_RCLONE"]] + args, os.environ)
+
 result = subprocess.run(
     [os.environ["OASIS_TEST_RCLONE"]] + args,
     stdout=subprocess.PIPE,

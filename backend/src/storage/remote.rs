@@ -6,7 +6,10 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use rocket::serde::Deserialize;
 use rocket::serde::Serialize;
 use std::{collections::BTreeMap, path::Path, process::Stdio, time::Duration};
-use tokio::{io::AsyncWriteExt, process::Command};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::{Child, ChildStdout, Command},
+};
 
 pub const NAMESPACE: &str = ".oasis-storage-v1";
 pub const DIR_MARKER: &str = ".oasis-dir";
@@ -84,6 +87,54 @@ pub struct Remote {
     env: BTreeMap<String, String>,
 }
 
+/// Owns the subprocess for exactly one range. Dropping it kills the producer.
+pub struct RemoteReader {
+    child: Child,
+    stdout: ChildStdout,
+    stderr: tokio::task::JoinHandle<Vec<u8>>,
+    provider: String,
+}
+
+impl Drop for RemoteReader {
+    fn drop(&mut self) {
+        self.stderr.abort();
+    }
+}
+
+impl RemoteReader {
+    pub async fn read_exact(&mut self, bytes: &mut [u8]) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(60), self.stdout.read_exact(bytes))
+            .await
+            .context("Remote video read timed out")?
+            .context("Remote video ended unexpectedly")?;
+        Ok(())
+    }
+
+    pub async fn finish(&mut self) -> Result<()> {
+        let mut extra = [0];
+        ensure!(
+            tokio::time::timeout(Duration::from_secs(60), self.stdout.read(&mut extra)).await??
+                == 0,
+            "Remote video returned unexpected extra bytes"
+        );
+        let status = tokio::time::timeout(Duration::from_secs(60), self.child.wait()).await??;
+        let stderr = (&mut self.stderr).await?;
+        ensure!(
+            status.success(),
+            "External provider '{}' failed video read. {}",
+            self.provider,
+            safe_provider_error(&stderr)
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct ObjectMetadata {
+    pub size: u64,
+    pub validator: String,
+}
+
 fn command() -> Command {
     let executable = std::env::var_os("OASIS_RCLONE")
         .map(std::path::PathBuf::from)
@@ -157,6 +208,89 @@ async fn obscure(password: &str) -> Result<String> {
 }
 
 impl Remote {
+    pub async fn metadata(&self, relative: &str) -> Result<ObjectMetadata> {
+        let bytes = self
+            .run(&["lsjson", &self.path(relative)?, "--stat", "--no-mimetype"])
+            .await?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        ensure!(value["IsDir"] == false, "Remote object is not a file");
+        let size = value["Size"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("Unknown remote object size"))?;
+        let validator = serde_json::to_string(&serde_json::json!([
+            size,
+            value["ModTime"],
+            value["ID"],
+            value["Hashes"]
+        ]))?;
+        Ok(ObjectMetadata { size, validator })
+    }
+
+    pub async fn open_range(
+        &self,
+        relative: &str,
+        offset: u64,
+        count: u64,
+    ) -> Result<RemoteReader> {
+        let mut cmd = command();
+        cmd.args([
+            "cat",
+            &self.path(relative)?,
+            "--offset",
+            &offset.to_string(),
+            "--count",
+            &count.to_string(),
+            "--config",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+            "--contimeout",
+            "15s",
+            "--timeout",
+            "60s",
+            "--retries",
+            "1",
+            "--low-level-retries",
+            "2",
+            "--log-level",
+            "ERROR",
+            "--buffer-size",
+            "64Ki",
+        ]);
+        for (key, value) in &self.env {
+            cmd.env(format!("RCLONE_CONFIG_OASIS_{key}"), value);
+        }
+        if let Some(certificate) = std::env::var_os("OASIS_STORAGE_CA_CERT") {
+            cmd.arg("--ca-cert").arg(certificate);
+        }
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Could not start remote video read")?;
+        let stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let task = tokio::spawn(async move {
+            // Drain stderr continuously, retaining only a bounded tail. Never log raw output.
+            let mut tail = Vec::new();
+            let mut buffer = [0; 4096];
+            while let Ok(n) = stderr.read(&mut buffer).await {
+                if n == 0 {
+                    break;
+                }
+                tail.extend_from_slice(&buffer[..n]);
+                if tail.len() > 32768 {
+                    tail.drain(..tail.len() - 32768);
+                }
+            }
+            tail
+        });
+        Ok(RemoteReader {
+            child,
+            stdout,
+            stderr: task,
+            provider: self.provider.name.clone(),
+        })
+    }
+
     pub async fn new(provider: Provider) -> Result<Self> {
         let mut env = BTreeMap::new();
         let backend = match provider.protocol {

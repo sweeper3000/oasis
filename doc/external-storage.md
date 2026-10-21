@@ -15,7 +15,9 @@ needed: Oasis supplies each connection privately to the child process.
 Source builds require Rust 1.85 or newer.
 
 Oasis still needs writable local space for its SQLite database and temporary
-processing. Allow space for two copies of the largest concurrent upload/download.
+processing. Allow space for the uncapped non-video response cache and two copies
+of the largest concurrent upload or internal file transfer. Videos stream without
+whole-file staging.
 For a private CA, set `OASIS_STORAGE_CA_CERT` to a PEM CA bundle readable by Oasis.
 TLS certificate checking is always enabled.
 
@@ -37,8 +39,10 @@ Open http://localhost:8000, finish setup with `/home/storage` as the local folde
 then configure external providers in Settings. Named volumes persist the database
 (`oasis-data`) and local files (`oasis-files`). Temporary files use writable
 container disk at `/opt/oasis/temp`, cleared by Oasis on startup. Do not mount
-that directory directly: startup removes and recreates it. Budget space for two
-copies of concurrent transfers. `docker compose -f compose.example.yaml down` keeps
+that directory directly: startup removes and recreates it. Budget space for the
+uncapped one-day non-video plaintext cache plus two copies of concurrent uploads
+or internal transfers. Remote videos stream without staging.
+`docker compose -f compose.example.yaml down` keeps
 these volumes; adding `--volumes` deletes them, including settings and local files.
 
 Optionally copy `.env.example` to `.env` to change the host port or bind address,
@@ -185,17 +189,56 @@ and removed after success, failure or cancellation. Individual consumed upload
 slices are deleted during assembly. Uploads idle for an hour are reaped every
 minute. Restarting Oasis clears staging left by a crash.
 
-Remote downloads are fetched into private staging and, when needed, authenticated
-and decrypted before serving. The response owns staging until it finishes or the
-client disconnects. ZIP downloads fetch one file at a time and cancel outstanding
-work when the response closes. There is no persistent remote-file cache. Downloads
-need space for the entire file and start after retrieval/decryption; a range
-request currently fetches and decrypts the whole remote file.
+### Video streaming
+
+Remote videos stream through Oasis without whole-file disk staging, for both
+signed-in playback and existing public share links. Oasis classifies videos by
+the original filename extension, case-insensitively: `.mp4`, `.mov`, `.avi`,
+`.mkv`, `.webm`, `.flv`, and `.wmv`. Encrypted filenames are already known to
+Oasis; no codec inspection or transcoding is performed. Playback still requires
+a container and codecs supported by the viewer's browser.
+
+Byte ranges fetch the requested portion using rclone. For encrypted videos,
+Oasis fetches complete 64 KiB encryption chunks, authenticates each before
+releasing its plaintext, and checks the terminal chunk when reading through EOF.
+Existing encrypted files need no conversion. Unlike whole-file decryption,
+streaming does not discover corruption in unread portions of a video.
+
+Reads use bounded memory buffers and stop when the response ends or disconnects.
+HEAD requests fetch metadata only. Providers without efficient range reads may
+still transfer preceding bytes. Browser buffering can fetch ahead of playback.
+Share expiration is checked on every new request, including seeks; already
+authorized responses and bytes buffered by the viewer are not revoked.
+
+### Non-video response cache
+
+Other remote file responses, previews and subtitles download completely and,
+when encrypted, authenticate/decrypt before serving. Complete files are cached
+as **plaintext**, even for encrypted providers, in private directories beneath
+`temp/file-cache/` (`/opt/oasis/temp/file-cache/` in Docker). Cache filenames are
+opaque, and the cache is not exposed as an Oasis folder.
+
+Entries expire after **24 hours without access**; a sweep runs every minute.
+Active responses pin their files, and closing a response refreshes its last-access
+time. There is **no cache size cap**. Restart clears all cached files. No additional
+Docker mount is needed; writable container disk must accommodate the cache.
+
+Each request is authorized before reuse and checks current remote size and
+available modification/version metadata. Changed objects are fetched again;
+deleted objects and failed provider checks do not fall back to stale cache.
+Same-size changes can remain undetected if provider metadata does not distinguish
+them. Oasis writes/moves/deletes invalidate affected entries; provider settings
+changes and database restore invalidate the cache. Concurrent requests share one
+download, and incomplete or unauthenticated files are never published as entries.
+
+Upload, copy/move, ZIP and backup staging remains temporary rather than cached.
+ZIP downloads fetch one file at a time and cancel outstanding work when the
+response closes. Local files continue to use normal local serving.
 
 Every external upload, including internal markers, is followed by a fresh
 destination metadata query. Success requires an existing file with the exact
 uploaded byte count; encrypted uploads are checked against the ciphertext size.
-This applies to all six protocols, browser uploads, copies, moves and renames,
+This applies to all supported protocols, browser uploads, copies, moves and renames,
 without an additional setting or file download. Missing files, unknown sizes,
 size mismatches and metadata query failures fail the operation. Matching size
 does not detect corruption that preserves length and is not full checksum
@@ -247,6 +290,7 @@ Native B2 tests use a local API fixture and real rclone, without production keys
 python3 scripts/test_external_storage.py --rclone /absolute/path/to/rclone --protocols b2 --passphrase
 python3 scripts/test_storage_b2.py --rclone /absolute/path/to/rclone
 python3 scripts/test_database_backup.py --rclone /absolute/path/to/rclone --storage-protocol b2 --passphrase
+python3 scripts/test_video_streaming.py --rclone /absolute/path/to/rclone --passphrase
 ```
 
 Add `--keep-alive` to the native conversion test for Safari validation. The fixture

@@ -551,6 +551,7 @@ pub async fn restore(
     tx.commit().await?;
     // No fallible work or await points after commit. The exclusive request gate
     // remains held until both caches have been replaced.
+    state.file_cache.clear();
     *state.site.lock().unwrap_or_else(|e| e.into_inner()) = site;
     state.site.clear_poison();
     *state.storage.lock().unwrap_or_else(|e| e.into_inner()) = backup.storage;

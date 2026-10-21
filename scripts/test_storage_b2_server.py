@@ -145,7 +145,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("X-Bz-Info-" + key, urllib.parse.quote(value))
             self.end_headers()
             if self.command != "HEAD":
-                self.wfile.write(body)
+                fault = server.root / "b2-fault.json"
+                slow = fault.exists() and json.loads(fault.read_text()).get("slow_download")
+                if slow:
+                    for offset in range(0, len(body), 65536):
+                        self.wfile.write(body[offset:offset + 65536])
+                        self.wfile.flush()
+                        time.sleep(0.03)
+                else:
+                    self.wfile.write(body)
             return
         body = json.loads(raw or b"{}")
         if operation == "b2_list_buckets":

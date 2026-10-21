@@ -28,8 +28,10 @@ services:
       # Set SFTP key/known_hosts paths in Settings to these container paths.
       # - ./secrets:/run/oasis-secrets:ro
     # Staging uses writable container disk at /opt/oasis/temp. Do not mount that
-    # directory directly: Oasis removes/recreates it on startup. Allow space for
-    # two copies of the largest concurrent uploads/downloads.
+    # directory directly: Oasis removes/recreates it on startup. Remote videos
+    # stream without staging. Other remote responses cache plaintext here until
+    # unused for 24 hours, with no size cap. Allow space for this cache plus two
+    # copies of the largest concurrent upload or internal file operation.
 
 volumes:
   oasis-data:
