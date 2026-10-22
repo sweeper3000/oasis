@@ -39,6 +39,15 @@
     "open_download": "Goto download",
     "download": "Download"
   },
+  "player": {
+    "download_original": "Download original",
+    "error": {
+      "network": "Playback stopped because the media could not be retrieved. Check your connection and try again.",
+      "decode": "The browser could not decode this media. Its format may be unsupported, or the file may be damaged.",
+      "unsupported": "The browser could not play this media source. Its format may be unsupported, or the file may be unavailable.",
+      "load": "The media could not be loaded. Check your connection, or download the original to play it in another app."
+    }
+  },
   "filetype": {
     "Code": "Code",
     "Dir": "Dir",

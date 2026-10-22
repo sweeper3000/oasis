@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { t } from "svelte-i18n";
   import { loopStore } from "../utils/store";
   import Plyr from "plyr";
   import { ELoopMethod, EFileType } from "../utils/enums";
@@ -14,13 +15,14 @@
   let splayer: HTMLVideoElement;
   let isLoop = false;
   let isSafari = checkSafari();
+  let playbackError = "";
 
   onMount(() => {
     if (!isSafari) {
       player = initPlayer();
 
       player.on("ready", (_) => {
-        player.play();
+        Promise.resolve(player.play()).catch(() => {});
       });
 
       player.on("ended", (_) => {
@@ -33,6 +35,13 @@
     }
     document.addEventListener("fullscreenchange", onFullScreen, true);
   });
+
+  onDestroy(() => {
+    document.removeEventListener("fullscreenchange", onFullScreen, true);
+    player?.destroy();
+  });
+
+  $: if (filePath) playbackError = "";
 
   $: if (filePath) {
     if (player) {
@@ -101,20 +110,39 @@
   };
 
   const initMediaSource = () => {
-    const mediaSrcType = getMediaType() === "video" ? videoMime() : "audio/mp3";
-    return [
-      {
-        src: filePath,
-        type: mediaSrcType,
-      },
-    ];
+    // A source type hint can reject otherwise playable MOV files in Chrome.
+    // Let the browser inspect video data; retain the existing audio hint.
+    return getMediaType() === "video"
+      ? [{ src: filePath }]
+      : [{ src: filePath, type: "audio/mp3" }];
   };
 
-  const videoMime = () => {
-    const extension = filePath.split("?")[0].split(".").pop().toLowerCase();
-    return ({ mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
-      mkv: "video/x-matroska", avi: "video/x-msvideo", flv: "video/x-flv",
-      wmv: "video/x-ms-wmv" } as Record<string, string>)[extension] || "application/octet-stream";
+  const onMediaError = (event: Event) => {
+    const target = event.target;
+    const media = target instanceof HTMLMediaElement ? target
+      : target instanceof HTMLSourceElement ? target.parentElement : null;
+    if (!(media instanceof HTMLMediaElement)
+      || (media !== player?.elements?.container?.querySelector("video, audio")
+        && media !== splayer)) return;
+    const source = target instanceof HTMLSourceElement ? target.src : media.currentSrc;
+    if (source && source !== new URL(filePath, window.location.href).href) return;
+
+    switch (media.error?.code) {
+      case MediaError.MEDIA_ERR_ABORTED:
+        return;
+      case MediaError.MEDIA_ERR_NETWORK:
+        playbackError = "network";
+        break;
+      case MediaError.MEDIA_ERR_DECODE:
+        playbackError = "decode";
+        break;
+      case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+        playbackError = "unsupported";
+        break;
+      default:
+        // A <source> error may not provide a MediaError code.
+        playbackError = "load";
+    }
   };
 
   const onFullScreen = async () => {
@@ -141,11 +169,11 @@
   };
 
   const onSvideoCanplay = () => {
-    splayer.play();
+    splayer.play().catch(() => {});
   };
 </script>
 
-<div>
+<div on:error|capture={onMediaError}>
   {#if fileType === EFileType.Video}
     {#if isSafari}
       <!-- svelte-ignore a11y-media-has-caption -->
@@ -157,7 +185,10 @@
         on:canplay={onSvideoCanplay}
         on:ended={onSvideoEnd}
       >
-        <source src={filePath} type={videoMime()} />
+        <source src={filePath} />
+        {#if trackPath}
+          <track kind="captions" label="Caption" src={trackPath} default />
+        {/if}
       </video>
     {:else}
       <video
@@ -168,7 +199,7 @@
         controls
         loop={isLoop}
       >
-        <source type={videoMime()} />
+        <source />
         <track kind="captions" default />
       </video>
     {/if}
@@ -180,6 +211,12 @@
         <source type="audio/mp3" />
         <track kind="captions" default />
       </audio>
+    </div>
+  {/if}
+  {#if playbackError}
+    <div class="mt-4 p-3 border rounded" role="alert">
+      <p>{$t(`player.error.${playbackError}`)}</p>
+      <a class="underline" href={filePath} download>{$t("player.download_original")}</a>
     </div>
   {/if}
 </div>
