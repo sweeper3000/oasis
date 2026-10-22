@@ -48,6 +48,8 @@ process.chdir("../backend");
 runCommand("cargo build --release");
 copyRecursiveSync("target/release/" + filename, "../release/oasis/" + filename);
 copyRecursiveSync("assets/oasis.conf.sample", "../release/oasis/oasis.conf.sample");
+copyRecursiveSync("../LICENSE-MIT", "../release/oasis/LICENSE-MIT");
+copyRecursiveSync("../THIRD_PARTY_NOTICES.md", "../release/oasis/THIRD_PARTY_NOTICES.md");
 
 process.chdir("../release/oasis");
 fs.chmodSync(filename, 0o755);

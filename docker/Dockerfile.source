@@ -22,6 +22,7 @@ WORKDIR /opt/oasis
 COPY --from=backend /build/backend/target/release/oasis ./oasis
 COPY --from=frontend /build/frontend/public ./public
 COPY backend/assets/oasis.conf.sample ./oasis.conf.sample
+COPY LICENSE-MIT THIRD_PARTY_NOTICES.md ./
 USER oasis
 EXPOSE 8000
 CMD ["/opt/oasis/oasis"]

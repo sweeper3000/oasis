@@ -14,6 +14,10 @@ Dockerfile installs rclone and CA certificates. No rclone configuration file is
 needed: Oasis supplies each connection privately to the child process.
 Source builds require Rust 1.85 or newer.
 
+The adapter uses rclone for protocol access; Oasis implements its own encryption
+format rather than rclone crypt. See [third-party acknowledgements and license
+notices](../THIRD_PARTY_NOTICES.md) for rclone and the encryption libraries.
+
 Oasis still needs writable local space for its SQLite database and temporary
 processing. Allow space for the uncapped non-video response cache and two copies
 of the largest concurrent upload or internal file transfer. Videos stream without
@@ -53,13 +57,56 @@ separately. The default host binding is loopback; set
 `OASIS_BIND_ADDRESS=0.0.0.0` for LAN access and arrange HTTPS when needed.
 
 For SFTP or a private CA, uncomment the read-only `./secrets` mount in the example
-and create that directory with the required files. The container runs as UID/GID
-10001: mounted files must be readable by that identity. In Settings, use container
+and create that directory with the required files. The source-built container runs
+as UID/GID 10001: mounted files must be readable by that identity. In Settings, use container
 paths such as `/run/oasis-secrets/id_ed25519` and
 `/run/oasis-secrets/known_hosts`. For a private CA, also uncomment
 `OASIS_STORAGE_CA_CERT` and the `environment:` heading. Provider hosts must be reachable from the container;
 `localhost` refers to the Oasis container itself. No privileged mode or FUSE is
 needed. `.env` and `secrets/` are excluded from Git and the image build context.
+
+### Upgrade an existing bind-mount installation
+
+Back up the existing database directory and local files before upgrading. Stop
+Oasis while taking a filesystem copy of its SQLite data, or use the encrypted
+[database export](database-backups.md) and separately copy local files. Keep
+environment encryption keys and any SSH keys or certificates separately.
+
+Build a distinct image tag from this checkout:
+
+```sh
+docker build -f docker/Dockerfile.source -t oasis:external-storage-providers .
+```
+
+In the existing Compose file, change the service's image to that tag and retain
+the current bind mounts, ports, and other deployment settings. For example, an
+installation already using these mounts should continue to use them:
+
+```yaml
+image: oasis:external-storage-providers
+volumes:
+  - ./data:/opt/oasis/data
+  - ./storage:/home/storage
+```
+
+Do not substitute the example's new named volumes for populated bind mounts.
+Relative host paths are resolved from the Compose project; use the existing
+project and preserve `/home/storage` if that is the saved storage path.
+
+Unlike the old prepared-release image, the source-built image uses UID/GID
+**10001**. Grant that identity read/write access to both mounted directories,
+including existing files and database subdirectories, using suitable ownership,
+group permissions, or ACLs. SQLite needs directory write access to create its
+journal/WAL files; making only the database file writable is insufficient.
+The `docker/Dockerfile` for prepared releases does not declare a non-root user.
+
+Recreate the service with the existing Compose file, for example
+`docker compose up -d --force-recreate oasis`, then inspect its logs. Building an
+image alone does not replace a running container. If an existing installation
+unexpectedly shows initial setup, verify the image and database mount before
+continuing. Files need no re-upload or registration, and database migrations still
+apply on startup. Keep backups: this is not a promise that older binaries can
+read database changes made by a newer version.
 
 ## Configure drives
 
@@ -222,6 +269,20 @@ the original filename extension, case-insensitively: `.mp4`, `.mov`, `.avi`,
 Oasis; no codec inspection or transcoding is performed. Playback still requires
 a container and codecs supported by the viewer's browser.
 
+Oasis uses Plyr controls outside Safari and native controls in Safari, with
+SRT/VTT caption support. Video sources are supplied without an extension-based
+HTML type hint so Chrome can inspect otherwise playable MOV recordings.
+Load failures show a playback message and a **Download original** link; browser
+autoplay restrictions are not reported as codec failures. There is no server-side
+transcoding or media repair. Incorrect duration/index data or missing media bytes
+can still cause failed seeks.
+
+The UI generates public links with a six-hour lifetime. Paste the complete public
+`/api/file/share?...` URL into an external player's network-open dialog to use it
+without a browser login cookie. Regular authenticated `/api/file/...` URLs need
+the Oasis session cookie, which VLC does not automatically inherit. The player
+must support the original format and be able to reach the Oasis server.
+
 Byte ranges fetch the requested portion using rclone. For encrypted videos,
 Oasis fetches complete 64 KiB encryption chunks, authenticates each before
 releasing its plaintext, and checks the terminal chunk when reading through EOF.
@@ -275,6 +336,11 @@ uploads; atomic replacement depends on the protocol/server. No background cleanu
 purges provider files automatically, since they are the persistent drive data.
 
 ## Validation
+
+The integration scripts require Python, rclone, OpenSSL, and `ssh-keygen` on PATH.
+Install the FTP/TLS test dependencies in a virtual environment as below. SMB tests
+also require a running Docker engine; the optional video `--keep-alive` browser
+fixture requires FFmpeg. These are test dependencies, not server runtime requirements.
 
 ```sh
 cd frontend

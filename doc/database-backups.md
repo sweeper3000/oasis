@@ -11,6 +11,11 @@ copied onto the server become visible when that folder is selected and Oasis has
 the necessary filesystem permissions. Finish transfers before copying files for
 an installation migration.
 
+Backups use rust-bip39 and RustCrypto's Argon2id and authenticated-encryption
+libraries; [third-party notices](../THIRD_PARTY_NOTICES.md) include their credits
+and licenses. This is an Oasis backup format, not a wallet backup: other BIP39
+applications cannot restore these archives.
+
 ## Export
 
 1. Select **Export database**, enter your administrator password, and generate
@@ -40,6 +45,12 @@ available, create another export.
 4. Review the source site and record counts. Select the destination's local folder;
    its current folder is the default, rather than the source server's old path.
 5. Confirm replacement and re-enter the destination administrator password.
+
+For the source-built Docker image, the destination database and storage mounts
+must be readable/writable by UID/GID 10001. Preserve existing bind mounts when
+upgrading an installation; see [bind-mount upgrades](external-storage.md#upgrade-an-existing-bind-mount-installation).
+Do not copy a live SQLite directory as a substitute for an export; stop the
+server before making a filesystem backup of that directory.
 
 Restore replaces database state immediately without a container restart. It waits
 for current request handlers and rejects active uploads or background copy/move

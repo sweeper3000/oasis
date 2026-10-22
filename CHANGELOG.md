@@ -1,5 +1,24 @@
 ## Change Log
 
+### Unreleased (external-storage-providers branch)
+
+- External main drives and named folders using S3, native Backblaze B2, SFTP,
+  FTPS, FTP, WebDAV, and SMB; protocol-first connection forms and saved-drive lists.
+- Optional authenticated encryption of remote contents and names, with raw
+  hexadecimal keys or Argon2id-derived passphrases and namespace recovery metadata.
+- Destination existence/size checks after remote uploads, retained move sources
+  on transfer failure, and virtual local/external copy/move destination browsing.
+- Password-verified encrypted database export/restore with recovery phrases,
+  import preview, transactional replacement, and session/public-link invalidation.
+- Range-aware remote video streaming, including encrypted videos and public links;
+  other remote responses use a plaintext cache expiring after 24 idle hours.
+- Live byte-weighted copy/move progress, stage and filename reporting, and retained
+  progress details on failures.
+- MOV playback source-hint fix, localized media-load errors, player cleanup,
+  and Safari caption support.
+- Source-built Docker/Compose deployment, migration guidance, and packaged
+  third-party license notices. These changes are not a tagged upstream release.
+
 ### v0.2.6
 
 - Folder download
