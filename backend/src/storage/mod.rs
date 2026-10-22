@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod config;
 pub mod crypto;
+pub mod progress;
 pub mod remote;
 pub mod response;
 pub mod stream;
@@ -11,6 +12,7 @@ use crate::{
 };
 use anyhow::{anyhow, ensure, Result};
 use config::{StorageConfig, StorageMode};
+use progress::{Phase, Progress};
 use remote::{Remote, DIR_MARKER, NAMESPACE};
 use std::path::{Path, PathBuf};
 
@@ -301,10 +303,20 @@ impl Storage {
     }
 
     pub async fn materialize(&self, path: &str) -> Result<Materialized> {
-        ensure!(
-            self.stat(path).await?.map(|m| !m.is_dir).unwrap_or(false),
-            "File does not exist"
-        );
+        self.materialize_progress(path, None).await
+    }
+
+    async fn materialize_progress(
+        &self,
+        path: &str,
+        progress: Option<&Progress>,
+    ) -> Result<Materialized> {
+        let metadata = self
+            .stat(path)
+            .await?
+            .ok_or_else(|| anyhow!("File does not exist"))?;
+        ensure!(!metadata.is_dir, "File does not exist");
+        let weight = metadata.size.max(1) as u128;
         match self.target(path)? {
             Target::Local(target) => Ok(Materialized {
                 path: target,
@@ -315,11 +327,26 @@ impl Storage {
                 let workspace = Workspace::new()?;
                 let raw = workspace.path().join("remote");
                 let remote = Remote::new(provider.clone()).await?;
-                remote.download(&relative, &raw).await?;
+                let stage = progress.map(|p| p.stage(Phase::Downloading, Some(path), weight));
+                let size = if provider.encryption {
+                    crypto::encrypted_size(metadata.size)?
+                } else {
+                    metadata.size
+                };
+                remote
+                    .download_progress(&relative, &raw, stage.as_ref().map(|stage| (stage, size)))
+                    .await?;
+                if let Some(stage) = stage {
+                    stage.finish();
+                }
                 let path = if let Some(key) = provider.key()? {
+                    let stage = progress.map(|p| p.stage(Phase::Decrypting, Some(path), weight));
                     let plain = workspace.path().join("plain");
-                    crypto::decrypt_file(&key, &raw, &plain).await?;
+                    crypto::decrypt_file_progress(&key, &raw, &plain, stage.as_ref()).await?;
                     tokio::fs::remove_file(raw).await?;
+                    if let Some(stage) = stage {
+                        stage.finish();
+                    }
                     plain
                 } else {
                     raw
@@ -355,6 +382,16 @@ impl Storage {
     }
 
     pub async fn write(&self, path: &str, source: &Path) -> Result<()> {
+        self.write_progress(path, source, None, path).await
+    }
+
+    async fn write_progress(
+        &self,
+        path: &str,
+        source: &Path,
+        progress: Option<&Progress>,
+        current_file: &str,
+    ) -> Result<()> {
         ensure!(!self.protected_root(path), "Cannot replace a drive root");
         ensure!(
             !self.stat(path).await?.map(|m| m.is_dir).unwrap_or(false),
@@ -366,21 +403,54 @@ impl Storage {
                 let staging = tempfile::Builder::new()
                     .prefix(".oasis-tmp-")
                     .tempfile_in(target.parent().unwrap())?;
-                tokio::fs::copy(source, staging.path()).await?;
+                let stage = if let Some(progress) = progress {
+                    let size = tokio::fs::metadata(source).await?.len();
+                    let stage =
+                        progress.stage(Phase::Copying, Some(current_file), size.max(1) as u128);
+                    copy_local(source, staging.path(), &stage).await?;
+                    stage.phase(Phase::Verifying);
+                    Some(stage)
+                } else {
+                    tokio::fs::copy(source, staging.path()).await?;
+                    None
+                };
                 staging
                     .persist(&target)
                     .map_err(|e| anyhow!("Could not commit upload: {}", e.error))?;
+                if let Some(stage) = stage {
+                    stage.finish();
+                }
             }
             Target::Remote(provider, relative) => {
                 let _invalidate = self.cache.mutation(&provider, &relative)?;
                 let remote = Remote::new(provider.clone()).await?;
+                let weight = tokio::fs::metadata(source).await?.len().max(1) as u128;
                 if let Some(key) = provider.key()? {
+                    let stage =
+                        progress.map(|p| p.stage(Phase::Encrypting, Some(current_file), weight));
                     let workspace = Workspace::new()?;
                     let encrypted = workspace.path().join("encrypted");
-                    crypto::encrypt_file(&key, source, &encrypted).await?;
-                    remote.upload(&relative, &encrypted).await?;
+                    crypto::encrypt_file_progress(&key, source, &encrypted, stage.as_ref()).await?;
+                    if let Some(stage) = stage {
+                        stage.finish();
+                    }
+                    let stage =
+                        progress.map(|p| p.stage(Phase::Uploading, Some(current_file), weight));
+                    remote
+                        .upload_progress(&relative, &encrypted, stage.as_ref())
+                        .await?;
+                    if let Some(stage) = stage {
+                        stage.finish();
+                    }
                 } else {
-                    remote.upload(&relative, source).await?;
+                    let stage =
+                        progress.map(|p| p.stage(Phase::Uploading, Some(current_file), weight));
+                    remote
+                        .upload_progress(&relative, source, stage.as_ref())
+                        .await?;
+                    if let Some(stage) = stage {
+                        stage.finish();
+                    }
                 }
             }
         }
@@ -437,6 +507,23 @@ impl Storage {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
     {
+        self.transfer_with_progress(source, destination, is_copy, overwrite, before_write, None)
+            .await
+    }
+
+    pub async fn transfer_with_progress<F, Fut>(
+        &self,
+        source: &str,
+        destination: &str,
+        is_copy: bool,
+        overwrite: bool,
+        before_write: F,
+        progress: Option<&Progress>,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         normalize(source)?;
         normalize(destination)?;
         ensure!(
@@ -451,6 +538,7 @@ impl Storage {
         let mut pending = vec![(source.to_owned(), destination.to_owned())];
         let mut files = vec![];
         let mut directories = vec![];
+        let mut total: u128 = 0;
         while let Some((src, dest)) = pending.pop() {
             let entry = self
                 .stat(&src)
@@ -464,7 +552,8 @@ impl Storage {
                 );
             }
             if entry.is_dir {
-                directories.push(dest.clone());
+                total += 1;
+                directories.push((src.clone(), dest.clone()));
                 for child in self.list(&src).await? {
                     let name = Path::new(&child.path)
                         .file_name()
@@ -474,30 +563,123 @@ impl Storage {
                     pending.push((child.path, join(&dest, &name)?));
                 }
             } else {
+                let read = match self.target(&src)? {
+                    Target::Local(_) => 0,
+                    Target::Remote(provider, _) => 1 + u128::from(provider.encryption),
+                };
+                let write = match self.target(&dest)? {
+                    Target::Local(_) => 1,
+                    Target::Remote(provider, _) => 1 + u128::from(provider.encryption),
+                };
+                total = total
+                    .checked_add(entry.size.max(1) as u128 * (read + write))
+                    .ok_or_else(|| anyhow!("Transfer size overflow"))?;
                 files.push((src, dest));
             }
         }
+        if let Some(progress) = progress {
+            progress.plan(total);
+        }
         // Install destination access rules before any file becomes visible.
         before_write().await?;
-        for directory in directories {
+        for (source, directory) in directories {
+            let stage = progress.map(|p| p.stage(Phase::CreatingFolders, Some(&source), 1));
             if self.stat(&directory).await?.is_none() {
                 self.mkdir(&directory).await?;
             }
+            if let Some(stage) = stage {
+                stage.finish();
+            }
         }
         for (source, destination) in files {
-            let file = self.materialize(&source).await?;
-            self.write(&destination, &file.path).await?;
+            let file = self.materialize_progress(&source, progress).await?;
+            self.write_progress(&destination, &file.path, progress, &source)
+                .await?;
         }
         if !is_copy {
+            if let Some(progress) = progress {
+                progress.stage(Phase::RemovingSource, Some(source), 0);
+            }
             self.remove(source).await?;
+        }
+        if let Some(progress) = progress {
+            progress.stage(Phase::Finalizing, None, 0);
         }
         Ok(())
     }
 }
 
+async fn copy_local(source: &Path, destination: &Path, progress: &progress::Stage) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut input = tokio::fs::File::open(source).await?;
+    let metadata = input.metadata().await?;
+    ensure!(metadata.is_file(), "Source is not a regular file");
+    let mut output = tokio::fs::File::create(destination).await?;
+    let mut buffer = vec![0; 1024 * 1024];
+    let mut done = 0u64;
+    loop {
+        let read = input.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read]).await?;
+        done = done
+            .checked_add(read as u64)
+            .ok_or_else(|| anyhow!("Copy size overflow"))?;
+        progress.bytes(done, metadata.len());
+    }
+    ensure!(done == metadata.len(), "Source file changed during copy");
+    output.flush().await?;
+    output.set_permissions(metadata.permissions()).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tracked_local_copy_reports_written_bytes_and_preserves_data_and_permissions() {
+        use std::sync::{Arc, Mutex};
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let destination = dir.path().join("destination");
+        let bytes = vec![91; 4 * 1024 * 1024];
+        tokio::fs::write(&source, &bytes).await.unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640))
+                .await
+                .unwrap();
+        }
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let sink = values.clone();
+        let progress = Progress::new(move |value, _, _| sink.lock().unwrap().push(value));
+        progress.plan(bytes.len() as u128);
+        let stage = progress.stage(Phase::Copying, Some("source"), bytes.len() as u128);
+        tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+        copy_local(&source, &destination, &stage).await.unwrap();
+        stage.finish();
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), bytes);
+        assert!(values
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|value| *value > 0.0 && *value < 0.99));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&destination)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o640
+            );
+        }
+    }
 
     #[test]
     fn rejects_escape_paths_and_reserved_names() {

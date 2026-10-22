@@ -431,11 +431,20 @@ async fn copy_move_file(
     let pool = state.pool.clone();
     tokio::spawn(async move {
         task.update_progress(0.0, CopyMoveTaskStatus::InProgress);
+        let observed = task.clone();
+        let progress = storage::progress::Progress::new(move |fraction, phase, file| {
+            observed.report(fraction, phase, file)
+        });
         let result: AnyResult<()> = async {
             storage
-                .transfer_with_hook(&source, &destination, task.is_copy, task.overwrite, || {
-                    sync_visibility(&pool, &source, &destination)
-                })
+                .transfer_with_progress(
+                    &source,
+                    &destination,
+                    task.is_copy,
+                    task.overwrite,
+                    || sync_visibility(&pool, &source, &destination),
+                    Some(&progress),
+                )
                 .await?;
             if !task.is_copy {
                 remove_source_visibility(&pool, &source).await?;

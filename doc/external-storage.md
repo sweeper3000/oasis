@@ -129,6 +129,30 @@ Move/copy destination selection browses the Oasis virtual root (`/`), so local
 folders and external drives appear together. Setup, local-folder settings, and
 database restore continue to browse physical server directories.
 
+## Move and copy progress
+
+Move/copy dialogs show an overall progress bar and percentage, the current source
+filename, and the active stage. Updates are polled every half-second. Preparation
+is indeterminate while Oasis discovers folder contents and checks conflicts.
+
+Progress measures byte-weighted work across the required download, decryption,
+local copy, encryption, and upload stages. It represents completed work rather
+than elapsed time or a percentage of file count. Empty files and folder creation
+receive a small work unit. Fast operations can complete between refreshes.
+
+Transfers remain below 100% while destination verification, source deletion for
+moves, and final updates are pending. Failures retain the last reported percentage,
+filename, and stage. The existing task-status API keeps its `progress` fraction
+and adds `phase` and nullable `current_file`; task ownership checks are unchanged.
+
+The optional test below exercises actual rclone counters with throttled disposable
+providers. Use `--protocols` to select protocols, `--test-python-path` for FTPS test
+dependencies, and `--keep-alive` for Safari checks:
+
+```sh
+python3 scripts/test_transfer_progress.py --rclone /absolute/path/to/rclone --passphrase
+```
+
 ## Encryption and recovery
 
 Enable encryption for an **empty, dedicated remote root**. Supply a random

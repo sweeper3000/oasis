@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 root = Path(os.environ["OASIS_TEST_ADAPTER_ROOT"])
 args = sys.argv[1:]
@@ -19,12 +20,23 @@ if args and args[0] == "cat":
     # Preserve streaming and cancellation instead of buffering video in Python.
     os.execvpe(os.environ["OASIS_TEST_RCLONE"], [os.environ["OASIS_TEST_RCLONE"]] + args, os.environ)
 
+throttle_file = root / "progress-throttle.json"
+throttle = json.loads(throttle_file.read_text()) if throttle_file.exists() else {}
+if args and args[0] == "copyto" and "--use-json-log" in args:
+    # Let real NDJSON statistics reach Oasis while the process is running.
+    # The bandwidth limit only exists in this disposable test adapter.
+    if throttle.get("rate"):
+        args += ["--bwlimit", throttle["rate"]]
+    os.execvpe(os.environ["OASIS_TEST_RCLONE"], [os.environ["OASIS_TEST_RCLONE"]] + args, os.environ)
+
 result = subprocess.run(
     [os.environ["OASIS_TEST_RCLONE"]] + args,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
 )
 output, code = result.stdout, result.returncode
+if args[0] == "lsjson" and "--stat" in args and throttle.get("verify_delay"):
+    time.sleep(throttle["verify_delay"])
 fault_file = root / "verification-fault.json"
 if code == 0 and args[0] == "lsjson" and "--stat" in args and fault_file.exists():
     fault = json.loads(fault_file.read_text())

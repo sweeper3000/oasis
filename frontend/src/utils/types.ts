@@ -137,6 +137,8 @@ export interface ICopyMoveTask {
   source: string;
   target: string;
   progress: number;
+  phase: "preparing" | "creating_folders" | "downloading" | "decrypting" | "copying" | "encrypting" | "uploading" | "verifying" | "removing_source" | "finalizing" | "completed";
+  current_file: string | null;
   is_copy: boolean;
 }
 

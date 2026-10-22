@@ -1,10 +1,11 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import { onDestroy } from "svelte";
   import Button from "../components/Button.svelte";
   import Modal from "../components/Modal.svelte";
   import { EFileType } from "../utils/enums";
   import type { ICopyMoveTask, IFile } from "../utils/types";
-  import { buildEncodeFilePath, sleep } from "../utils/util";
+  import { buildEncodeFilePath } from "../utils/util";
   import * as api from "../utils/api";
   import { deleteFile } from "../utils/store";
 
@@ -16,6 +17,18 @@
   let isLoading = false;
   let step = 1;
   let progress = 0;
+  let phase: ICopyMoveTask["phase"] = "preparing";
+  let currentFile = "";
+  let disposed = false;
+  const polling = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  let wake: () => void;
+  onDestroy(() => {
+    disposed = true;
+    polling.abort();
+    clearTimeout(timer);
+    if (wake) wake();
+  });
   let done = false;
   let error = false;
   let overwrite = $t("modal.copy_move.no");
@@ -37,12 +50,22 @@
         false
       );
       const endpoint = `/api/file/copy-move-status/${uuid}`;
-      let task: ICopyMoveTask = await api.get(endpoint, "json");
-      while (task.status !== "Success" && task.status !== "Failed") {
+      let task: ICopyMoveTask;
+      while (!disposed) {
+        const response = await fetch(endpoint, { signal: polling.signal });
+        if (!response.ok) throw new Error(response.status.toString());
+        task = await response.json();
+        if (disposed) return;
         progress = task.progress;
-        await sleep(500);
-        task = await api.get(endpoint, "json");
+        phase = task.phase || "preparing";
+        currentFile = task.current_file || "";
+        if (task.status === "Success" || task.status === "Failed") break;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+          timer = setTimeout(() => { wake = null; resolve(); }, 500);
+        });
       }
+      if (disposed) return;
 
       if (task.status === "Success") {
         progress = 1.0;
@@ -56,10 +79,11 @@
         deleteFile(source);
       }
     } catch (e) {
+      if (disposed) return;
       console.error(e);
       error = true;
     } finally {
-      isLoading = false;
+      if (!disposed) isLoading = false;
     }
   };
 </script>
@@ -111,9 +135,21 @@
           `modal.copy_move.to`
         )}<b>{target || "/"}</b>
       </div>
-      <div>
-        {$t("modal.copy_move.progress")}<b>{(progress * 100).toFixed(2)}%</b>
+      <div class="mt-4">
+        {#if phase === "preparing" && !done && !error}
+          <progress class="transfer-progress" max="100" aria-label={$t("modal.copy_move.progress")} />
+        {:else}
+          <progress class="transfer-progress" max="100" value={progress * 100}
+            aria-label={$t("modal.copy_move.progress")} />
+        {/if}
+        {#if phase !== "preparing" || done || error}
+          <div>{$t("modal.copy_move.progress")}<b>{(progress * 100).toFixed(2)}%</b></div>
+        {/if}
       </div>
+      <div role="status" aria-live="polite" class="mt-2">
+        {$t(`modal.copy_move.phases.${phase}`)}
+      </div>
+      {#if currentFile}<div class="text-sm text-gray-600 break-all mt-1">{currentFile}</div>{/if}
       {#if done}
         <div class="mt-4">{$t("modal.copy_move.done_text")}</div>
       {:else if error}
@@ -125,8 +161,12 @@
         onClick={onClose}
         disabled={!done && !error}
         color="white"
-        value={done || error ? "Close" : "Processing"}
+        value={done || error ? $t("modal.copy_move.close") : $t("modal.copy_move.processing")}
       />
     </div>
   {/if}
 </Modal>
+
+<style>
+  .transfer-progress { width: 100%; height: 1rem; }
+</style>

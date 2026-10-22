@@ -174,7 +174,22 @@ pub fn plaintext_size(size: u64) -> Result<u64> {
     Ok(full * CHUNK as u64 + last - 16)
 }
 
+pub fn encrypted_size(size: u64) -> Result<u64> {
+    size.checked_add(HEADER as u64)
+        .and_then(|n| n.checked_add((size / CHUNK as u64 + 1).checked_mul(16)?))
+        .ok_or_else(|| anyhow!("Encrypted file size overflow"))
+}
+
 pub async fn encrypt_file(key: &[u8; 32], source: &Path, target: &Path) -> Result<()> {
+    encrypt_file_progress(key, source, target, None).await
+}
+
+pub async fn encrypt_file_progress(
+    key: &[u8; 32],
+    source: &Path,
+    target: &Path,
+    progress: Option<&super::progress::Stage>,
+) -> Result<()> {
     let mut input = File::open(source).await?;
     let size = input.metadata().await?.len();
     ensure!(
@@ -201,6 +216,9 @@ pub async fn encrypt_file(key: &[u8; 32], source: &Path, target: &Path) -> Resul
             .map_err(|_| anyhow!("File encryption failed"))?;
         output.write_all(&encrypted).await?;
         left -= CHUNK as u64;
+        if let Some(progress) = progress {
+            progress.bytes(size - left, size);
+        }
     }
     let mut buffer = vec![0; left as usize];
     input.read_exact(&mut buffer).await?;
@@ -217,10 +235,22 @@ pub async fn encrypt_file(key: &[u8; 32], source: &Path, target: &Path) -> Resul
         "Source file changed during encryption"
     );
     output.flush().await?;
+    if let Some(progress) = progress {
+        progress.bytes(size, size);
+    }
     Ok(())
 }
 
 pub async fn decrypt_file(key: &[u8; 32], source: &Path, target: &Path) -> Result<()> {
+    decrypt_file_progress(key, source, target, None).await
+}
+
+pub async fn decrypt_file_progress(
+    key: &[u8; 32],
+    source: &Path,
+    target: &Path,
+    progress: Option<&super::progress::Stage>,
+) -> Result<()> {
     let mut input = File::open(source).await?;
     let mut header = [0; HEADER];
     input.read_exact(&mut header).await?;
@@ -251,6 +281,9 @@ pub async fn decrypt_file(key: &[u8; 32], source: &Path, target: &Path) -> Resul
             })?;
         output.write_all(&plain).await?;
         left -= CHUNK as u64;
+        if let Some(progress) = progress {
+            progress.bytes(size - left, size);
+        }
     }
     let mut buffer = vec![0; left as usize + 16];
     input.read_exact(&mut buffer).await?;
@@ -268,12 +301,57 @@ pub async fn decrypt_file(key: &[u8; 32], source: &Path, target: &Path) -> Resul
         bail!("Unexpected trailing encrypted data");
     }
     output.flush().await?;
+    if let Some(progress) = progress {
+        progress.bytes(size, size);
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tracked_crypto_reports_authenticated_plaintext_work_without_changing_format() {
+        use super::super::progress::{Phase, Progress};
+        use std::sync::{Arc, Mutex};
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let cipher = dir.path().join("cipher");
+        let plain = dir.path().join("plain");
+        let data = vec![43; CHUNK * 16 + 31];
+        tokio::fs::write(&source, &data).await.unwrap();
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let sink = values.clone();
+        let progress =
+            Progress::new(move |value, phase, _| sink.lock().unwrap().push((value, phase)));
+        progress.plan(data.len() as u128 * 2);
+        let stage = progress.stage(Phase::Encrypting, Some("source"), data.len() as u128);
+        tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+        encrypt_file_progress(&[14; 32], &source, &cipher, Some(&stage))
+            .await
+            .unwrap();
+        stage.finish();
+        assert_eq!(
+            tokio::fs::metadata(&cipher).await.unwrap().len(),
+            encrypted_size(data.len() as u64).unwrap()
+        );
+        let stage = progress.stage(Phase::Decrypting, Some("source"), data.len() as u128);
+        tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+        decrypt_file_progress(&[14; 32], &cipher, &plain, Some(&stage))
+            .await
+            .unwrap();
+        stage.finish();
+        assert_eq!(tokio::fs::read(&plain).await.unwrap(), data);
+        let values = values.lock().unwrap();
+        assert!(values
+            .iter()
+            .any(|(value, phase)| *phase == Phase::Encrypting && *value > 0.0 && *value < 0.495));
+        assert!(values
+            .iter()
+            .any(|(value, phase)| *phase == Phase::Decrypting && *value > 0.495 && *value < 0.99));
+        assert!(values.windows(2).all(|values| values[1].0 >= values[0].0));
+    }
 
     #[tokio::test]
     async fn random_access_chunks_match_full_decryption_and_authenticate_boundaries() {
@@ -333,6 +411,7 @@ mod tests {
             assert_eq!(tokio::fs::read(&decoded).await.unwrap(), bytes);
             assert!(decrypt_file(&[8; 32], &encrypted, &decoded).await.is_err());
             let original = tokio::fs::read(&encrypted).await.unwrap();
+            assert_eq!(original.len() as u64, encrypted_size(size as u64).unwrap());
             let mut corrupt = original.clone();
             corrupt[HEADER] ^= 1;
             tokio::fs::write(&encrypted, &corrupt).await.unwrap();

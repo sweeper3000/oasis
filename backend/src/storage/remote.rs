@@ -408,6 +408,15 @@ impl Remote {
     }
 
     async fn run_command(&self, args: &[&str], allow_missing: bool) -> Result<Vec<u8>> {
+        self.run_tracked(args, allow_missing, None).await
+    }
+
+    async fn run_tracked(
+        &self,
+        args: &[&str],
+        allow_missing: bool,
+        progress: Option<(&super::progress::Stage, u64)>,
+    ) -> Result<Vec<u8>> {
         let mut cmd = command();
         cmd.args(args).args([
             "--config",
@@ -434,7 +443,33 @@ impl Remote {
         } else {
             3600
         };
-        let output = tokio::time::timeout(Duration::from_secs(limit), cmd.output())
+        let operation = async {
+            if let Some((stage, size)) = progress {
+                cmd.args([
+                    "--use-json-log",
+                    "--stats",
+                    "500ms",
+                    "--stats-log-level",
+                    "ERROR",
+                ]);
+                let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+                let stdout = child.stdout.take().unwrap();
+                let stderr = child.stderr.take().unwrap();
+                let (stdout, stderr, status) = tokio::join!(
+                    bounded_output(stdout),
+                    progress_output(stderr, stage, size),
+                    child.wait()
+                );
+                Ok::<_, std::io::Error>(std::process::Output {
+                    stdout,
+                    stderr,
+                    status: status?,
+                })
+            } else {
+                cmd.output().await
+            }
+        };
+        let output = tokio::time::timeout(Duration::from_secs(limit), operation)
             .await
             .context("External storage operation timed out")?
             .context("Install rclone 1.71+ or set OASIS_RCLONE to its executable")?;
@@ -577,14 +612,27 @@ impl Remote {
     }
 
     pub async fn download(&self, relative: &str, target: &Path) -> Result<()> {
-        self.run(&[
-            "copyto",
-            &self.path(relative)?,
-            target
-                .to_str()
-                .ok_or_else(|| anyhow!("Invalid staging path"))?,
-            "--ignore-times",
-        ])
+        self.download_progress(relative, target, None).await
+    }
+
+    pub async fn download_progress(
+        &self,
+        relative: &str,
+        target: &Path,
+        progress: Option<(&super::progress::Stage, u64)>,
+    ) -> Result<()> {
+        self.run_tracked(
+            &[
+                "copyto",
+                &self.path(relative)?,
+                target
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid staging path"))?,
+                "--ignore-times",
+            ],
+            false,
+            progress,
+        )
         .await?;
         Ok(())
     }
@@ -593,21 +641,48 @@ impl Remote {
         self.upload_to(source, &self.path(relative)?).await
     }
 
+    pub async fn upload_progress(
+        &self,
+        relative: &str,
+        source: &Path,
+        progress: Option<&super::progress::Stage>,
+    ) -> Result<()> {
+        self.upload_to_progress(source, &self.path(relative)?, progress)
+            .await
+    }
+
     // All outgoing files, including internal markers, are checked using fresh
     // remote metadata. For encrypted files, source is the ciphertext staging file.
     async fn upload_to(&self, source: &Path, destination: &str) -> Result<()> {
+        self.upload_to_progress(source, destination, None).await
+    }
+
+    async fn upload_to_progress(
+        &self,
+        source: &Path,
+        destination: &str,
+        progress: Option<&super::progress::Stage>,
+    ) -> Result<()> {
         let metadata = tokio::fs::metadata(source).await?;
         ensure!(metadata.is_file(), "Upload source must be a file");
         let expected_size = metadata.len();
-        self.run(&[
-            "copyto",
-            source
-                .to_str()
-                .ok_or_else(|| anyhow!("Invalid staging path"))?,
-            destination,
-            "--ignore-times",
-        ])
+        self.run_tracked(
+            &[
+                "copyto",
+                source
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid staging path"))?,
+                destination,
+                "--ignore-times",
+            ],
+            false,
+            progress.map(|stage| (stage, expected_size)),
+        )
         .await?;
+        if let Some(stage) = progress {
+            stage.bytes(expected_size, expected_size);
+            stage.phase(super::progress::Phase::Verifying);
+        }
         let metadata = self
             .run(&[
                 "lsjson",
@@ -620,6 +695,74 @@ impl Remote {
             .context("Upload verification failed: could not read destination metadata")?;
         verify_uploaded_metadata(&metadata, expected_size)
     }
+}
+
+const MAX_PROGRESS_LINE: usize = 64 * 1024;
+fn progress_bytes(line: &[u8]) -> Option<u64> {
+    if line.len() > MAX_PROGRESS_LINE {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(line).ok()?;
+    value.get("stats")?.get("bytes")?.as_u64()
+}
+
+async fn bounded_output(mut reader: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    let mut tail = Vec::new();
+    let mut buffer = [0; 4096];
+    while let Ok(n) = reader.read(&mut buffer).await {
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..n]);
+        if tail.len() > 32768 {
+            tail.drain(..tail.len() - 32768);
+        }
+    }
+    tail
+}
+
+async fn progress_output(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    stage: &super::progress::Stage,
+    size: u64,
+) -> Vec<u8> {
+    let mut buffer = [0; 4096];
+    let mut line = Vec::new();
+    let mut tail = Vec::new();
+    let mut discard = false;
+    while let Ok(n) = reader.read(&mut buffer).await {
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..n]);
+        if tail.len() > 32768 {
+            tail.drain(..tail.len() - 32768);
+        }
+        for &byte in &buffer[..n] {
+            if byte == b'\n' {
+                if !discard {
+                    if let Some(done) = progress_bytes(&line) {
+                        stage.bytes(done, size);
+                    }
+                }
+                line.clear();
+                discard = false;
+            } else if !discard {
+                if line.len() == MAX_PROGRESS_LINE {
+                    line.clear();
+                    discard = true;
+                } else {
+                    line.push(byte);
+                }
+            }
+        }
+    }
+    if !discard {
+        if let Some(done) = progress_bytes(&line) {
+            stage.bytes(done, size);
+        }
+    }
+    tail
 }
 
 // Only return server-owned text for explicitly recognized codes. Raw stderr can
@@ -683,6 +826,66 @@ fn append(parent: &str, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn statistics_only_accept_bounded_nonnegative_byte_counters() {
+        assert_eq!(
+            progress_bytes(
+                br#"{"stats":{"bytes":123},"msg":"secret signed URL","object":"encrypted-name"}"#
+            ),
+            Some(123)
+        );
+        for bytes in [
+            br#"{"stats":{"bytes":-1}}"#.as_ref(),
+            br#"{"stats":{"bytes":0.5}}"#,
+            br#"{"stats":{"bytes":"999"}}"#,
+            br#"{"bytes":123}"#,
+            b"not json",
+            br#"{"stats":{"bytes":18446744073709551616}}"#,
+        ] {
+            assert_eq!(progress_bytes(bytes), None);
+        }
+        assert_eq!(progress_bytes(&vec![b'x'; MAX_PROGRESS_LINE + 1]), None);
+    }
+
+    #[tokio::test]
+    async fn statistics_are_published_before_eof_and_oversized_records_are_discarded() {
+        use super::super::progress::{Phase, Progress};
+        use std::sync::{Arc, Mutex};
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let sink = values.clone();
+        let progress = Progress::new(move |value, _, _| sink.lock().unwrap().push(value));
+        progress.plan(100);
+        let stage = progress.stage(Phase::Uploading, Some("original.txt"), 100);
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let observed = tokio::spawn(async move { progress_output(reader, &stage, 100).await });
+        tokio::time::sleep(Duration::from_millis(260)).await;
+        writer
+            .write_all(
+                br#"{"stats":{"bytes":50},"msg":"never expose this"}
+"#,
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while *values.lock().unwrap().last().unwrap() == 0.0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("No progress before process EOF");
+        writer
+            .write_all(&vec![b'x'; MAX_PROGRESS_LINE + 4096])
+            .await
+            .unwrap();
+        writer
+            .write_all(b"\n{\"stats\":{\"bytes\":10}}\n{\"stats\":{\"bytes\":100}}")
+            .await
+            .unwrap();
+        drop(writer);
+        assert!(observed.await.unwrap().len() <= 32768);
+        assert!(values.lock().unwrap().iter().all(|value| *value < 1.0));
+    }
 
     #[test]
     fn namespace_versions_authenticate_keys_and_derivation_metadata() {
