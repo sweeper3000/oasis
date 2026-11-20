@@ -13,6 +13,7 @@
 </script>
 
 <div
+  data-oasis-modal
   class="fixed top-0 left-0 z-40 w-screen h-screen bg-gray-400 dark:bg-gray-600 bg-opacity-40"
   on:click={clickOutToClose ? onClose : () => {}}
 >

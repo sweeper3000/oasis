@@ -303,6 +303,7 @@
       "text_after": "。此操作是永久的且不可撤销。确定要继续?"
     },
     "search_file": {
+      "open_search": "搜索文件",
       "placeholder": "搜索..",
       "recent": "最近搜索",
       "clear_all": "清除全部",

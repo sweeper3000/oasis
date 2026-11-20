@@ -304,6 +304,7 @@
       "text_after": ". This action is permanent and cannot undo. Are you sure you want to continue?"
     },
     "search_file": {
+      "open_search": "Search files",
       "placeholder": "Search..",
       "recent": "Recent search",
       "clear_all": "Clear all",

@@ -24,10 +24,12 @@
   let historyKeywords: Array<string> = [];
   let useHistoryKeyword = false; // When using recent keyword, start fetching immediately
 
+  export function focusSearch() {
+    inputElement?.focus();
+  }
+
   onMount(() => {
-    if (inputElement) {
-      inputElement.focus();
-    }
+    focusSearch();
     initHistoryKeywords();
   });
 
@@ -159,6 +161,8 @@
   <div class="flex flex-row justify-between items-center p-4">
     <Icon type={EIconType.search} size="small" color={EIconColor.blue} />
     <input
+      id="oasis-search-input"
+      aria-label={$t("modal.search_file.open_search")}
       type="text"
       class="w-full ml-2 border-none focus:outline-none"
       bind:value={keyword}

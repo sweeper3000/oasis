@@ -133,7 +133,7 @@
   };
 </script>
 
-<div class="fixed z-10 left-0 top-0 w-full min-h-full bg-black bg-opacity-40">
+<div data-oasis-modal class="fixed z-10 left-0 top-0 w-full min-h-full bg-black bg-opacity-40">
   <div
     class="bg-white dark:bg-gray-800 w-96 mt-20 mx-auto p-4 border rounded-lg border-gray-50 dark:border-gray-700 flex flex-col"
   >
