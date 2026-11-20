@@ -1,3 +1,27 @@
+# OS metadata
+.DS_Store
+.DS_STORE
+._*
+Thumbs.db
+Desktop.ini
+
+# Python test caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local Oasis configuration, runtime data, and unpackaged binaries
+oasis.conf
+/data/
+/temp/
+/storage/
+/oasis
+/backend/data/
+/backend/temp/
+/backend/storage/
+/backend/oasis
+
 # Logs
 logs
 *.log
