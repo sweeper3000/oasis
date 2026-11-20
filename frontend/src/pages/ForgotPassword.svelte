@@ -48,9 +48,9 @@
   {#if step === 1}
     <form on:submit={onConfirm} bind:this={form}>
       <div
-        class="w-80 center bg-gray-50 shadow rounded-lg flex flex-col items-center p-6"
+        class="w-80 center bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-6"
       >
-        <div class="text-xl font-bold mb-8 text-gray-700">
+        <div class="text-xl font-bold mb-8 text-gray-700 dark:text-gray-200">
           {$t("component.forgot_password.title")}
         </div>
         <div class="w-full grid grid-cols-4 mb-4">
@@ -78,9 +78,9 @@
     </form>
   {:else if step === 2 && filename}
     <div
-      class="w-80 center bg-gray-50 shadow rounded-lg flex flex-col items-center p-6"
+      class="w-80 center bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-6"
     >
-      <div class="text-xl font-bold mb-4 text-gray-700">
+      <div class="text-xl font-bold mb-4 text-gray-700 dark:text-gray-200">
         {$t("component.forgot_password.title")}
       </div>
       <div>

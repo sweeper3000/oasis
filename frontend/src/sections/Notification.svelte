@@ -43,7 +43,7 @@
 
   const buildStyle = () => {
     let style =
-      "flex flex-row justify-between bg-gray-50 shadow rounded border-l-4 items-center p-2 notification";
+      "flex flex-row justify-between bg-gray-50 dark:bg-gray-800 shadow rounded border-l-4 items-center p-2 notification";
 
     switch (currentNotification.type) {
       case "success":
@@ -95,7 +95,7 @@
           />
         </div>
         <div class="flex flex-col">
-          <div class="text-gray-700 font-bold">
+          <div class="text-gray-700 dark:text-gray-200 font-bold">
             {$t("message.type." + type)}
           </div>
           <div class="text-sm">{msg}</div>

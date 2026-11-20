@@ -28,21 +28,21 @@
 <div class={elementStyle}>
   <Link
     to={"/" + $sectionStore}
-    class="hover:bg-blue-400 hover:text-white px-1 rounded whitespace-nowrap overflow-ellipsis"
+    class="hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white px-1 rounded whitespace-nowrap overflow-ellipsis"
     >{$t("section." + $sectionStore)}</Link
   >
   {#each dirs as dir, i}
     <span>/</span>
     <Link
       to={buildLink(i)}
-      class="hover:bg-blue-400 hover:text-white px-1 rounded whitespace-nowrap  overflow-ellipsis"
+      class="hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white px-1 rounded whitespace-nowrap  overflow-ellipsis"
       >{dir}</Link
     >
   {/each}
   {#if filename}
     <span>/</span>
     <span
-      class="px-1 rounded text-gray-500 whitespace-nowrap  overflow-ellipsis"
+      class="px-1 rounded text-gray-500 dark:text-gray-400 whitespace-nowrap  overflow-ellipsis"
       >{filename}</span
     >
   {/if}

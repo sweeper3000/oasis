@@ -66,9 +66,9 @@
     {#if step === 1}
       <form on:submit={onConfirm} bind:this={form}>
         <div
-          class="w-80 center bg-gray-50 shadow rounded-lg flex flex-col items-center p-6"
+          class="w-80 center bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-6"
         >
-          <div class="text-xl font-bold mb-8 text-gray-700">
+          <div class="text-xl font-bold mb-8 text-gray-700 dark:text-gray-200">
             {$t("component.reset_password.title")}
           </div>
           <div class="w-full grid grid-cols-4 mb-4">
@@ -142,15 +142,15 @@
       </form>
     {:else}
       <div
-        class="w-80 center bg-gray-50 shadow rounded-lg flex flex-col items-center p-6"
+        class="w-80 center bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-6"
       >
-        <div class="text-xl font-bold mb-4 text-gray-700">
+        <div class="text-xl font-bold mb-4 text-gray-700 dark:text-gray-200">
           {$t("component.reset_password.title")}
         </div>
         <div>
           {$t("component.reset_password.notice-before")}<Link
             to="/login"
-            class="text-blue-400 hover:text-white hover:bg-blue-400"
+            class="text-blue-400 hover:text-white hover:bg-blue-400 dark:hover:bg-blue-600"
             >{$t("section.login")}</Link
           >{$t("component.reset_password.notice-after")}
         </div>

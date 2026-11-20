@@ -30,7 +30,7 @@
 </script>
 
 <div
-  class="absolute top-10 right-1 z-10 text-lg menu-width border rounded bg-white"
+  class="absolute top-10 right-1 z-10 text-lg menu-width border rounded bg-white dark:bg-gray-800"
   on:click={clickInside}
 >
   {#if user}
@@ -38,13 +38,13 @@
     {#if user.permission > 0}
       <hr />
       <div
-        class="px-4 my-1 cursor-pointer hover:bg-blue-400 hover:text-white"
+        class="px-4 my-1 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
         on:click={() => toPage("profile")}
       >
         {$t("component.avatar_menu.profile")}
       </div>
       <div
-        class="px-4 my-1 cursor-pointer hover:bg-blue-400 hover:text-white"
+        class="px-4 my-1 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
         on:click={() => toPage("settings")}
       >
         {$t("component.avatar_menu.settings")}
@@ -52,28 +52,28 @@
     {/if}
     <hr />
     <div
-      class="px-4 my-1 cursor-pointer hover:bg-blue-400 hover:text-white"
+      class="px-4 my-1 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
       on:click={() => onOpenModal("about")}
     >
       {$t("component.avatar_menu.about")}
     </div>
     {#if user.permission > 0}
       <div
-        class="px-4 my-1 cursor-pointer hover:bg-blue-400 hover:text-white"
+        class="px-4 my-1 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
         on:click={() => onOpenModal("shutdown")}
       >
         {$t("component.avatar_menu.shutdown")}
       </div>
     {/if}
     <div
-      class="px-4 my-1 cursor-pointer hover:bg-blue-400 hover:text-white"
+      class="px-4 my-1 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
       on:click={() => onOpenModal("signout")}
     >
       {$t("component.avatar_menu.signout")}
     </div>
   {:else}
     <div
-      class="px-4 my-1 cursor-pointer hover:bg-blue-400 hover:text-white"
+      class="px-4 my-1 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
       on:click={() => toPage("login")}
     >
       {$t("component.avatar_menu.login")}

@@ -33,12 +33,12 @@
 
 {#if user.permission > 0}
   <div
-    class="z-20 w-32 py-1 bg-white border rounded-sm shadow-sm "
+    class="z-20 w-32 py-1 bg-white dark:bg-gray-800 border rounded-sm shadow-sm "
     bind:this={menu}
     on:click|stopPropagation
   >
     <div
-      class="px-2 py-1 text-black hover:bg-gray-400 cursor-pointer"
+      class="px-2 py-1 text-black dark:text-gray-100 hover:bg-gray-400 dark:hover:bg-gray-600 cursor-pointer"
       on:click={() => onContextAction("visibility")}
     >
       {contextFile?.least_permission > 0
@@ -46,31 +46,31 @@
         : $t("component.context_menu.hide")}
     </div>
     <div
-      class="px-2 py-1 text-black hover:bg-gray-400 cursor-pointer"
+      class="px-2 py-1 text-black dark:text-gray-100 hover:bg-gray-400 dark:hover:bg-gray-600 cursor-pointer"
       on:click={() => onContextAction("rename")}
     >
       {$t("component.context_menu.rename")}
     </div>
     <div
-      class="px-2 py-1 text-black hover:bg-gray-400 cursor-pointer"
+      class="px-2 py-1 text-black dark:text-gray-100 hover:bg-gray-400 dark:hover:bg-gray-600 cursor-pointer"
       on:click={() => onContextAction("download")}
     >
       {$t("component.context_menu.download")}
     </div>
     <div
-      class="px-2 py-1 text-black hover:bg-gray-400 cursor-pointer"
+      class="px-2 py-1 text-black dark:text-gray-100 hover:bg-gray-400 dark:hover:bg-gray-600 cursor-pointer"
       on:click={() => onContextAction("copy")}
     >
       {$t("component.context_menu.copy_to")}
     </div>
     <div
-      class="px-2 py-1 text-black hover:bg-gray-400 cursor-pointer"
+      class="px-2 py-1 text-black dark:text-gray-100 hover:bg-gray-400 dark:hover:bg-gray-600 cursor-pointer"
       on:click={() => onContextAction("move")}
     >
       {$t("component.context_menu.move_to")}
     </div>
     <div
-      class="px-2 py-1 text-red-500 hover:bg-gray-400 cursor-pointer"
+      class="px-2 py-1 text-red-500 hover:bg-gray-400 dark:hover:bg-gray-600 cursor-pointer"
       on:click={() => onContextAction("delete")}
     >
       {$t("component.context_menu.delete")}
@@ -78,7 +78,7 @@
 
     <hr />
     <div
-      class="px-2 py-1 text-black hover:bg-gray-400 cursor-pointer"
+      class="px-2 py-1 text-black dark:text-gray-100 hover:bg-gray-400 dark:hover:bg-gray-600 cursor-pointer"
       on:click={() => onContextAction("close")}
     >
       {$t("component.context_menu.close")}

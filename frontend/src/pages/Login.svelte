@@ -82,9 +82,9 @@
   <div class="relative container-height w-full">
     <form on:submit={onConfirm} bind:this={form}>
       <div
-        class="w-80 center bg-gray-50 shadow rounded-lg flex flex-col items-center p-6"
+        class="w-80 center bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-6"
       >
-        <div class="text-xl font-bold mb-8 text-gray-700">
+        <div class="text-xl font-bold mb-8 text-gray-700 dark:text-gray-200">
           {$t("component.login.title")}
         </div>
         <div class="w-full grid grid-cols-4 mb-4">
@@ -127,14 +127,14 @@
 
         <div class="w-full flex flex-row justify-between items-center mt-4">
           <div
-            class="hover:bg-blue-400 hover:text-white cursor-pointer rounded px-1"
+            class="hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white cursor-pointer rounded px-1"
             on:click={forgotPassword}
           >
             {$t("component.login.forgot_password")}
           </div>
           {#if allow_guest}
             <div
-              class="hover:bg-blue-400 hover:text-white cursor-pointer rounded px-1"
+              class="hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white cursor-pointer rounded px-1"
               on:click={sendGuestLoginRequest}
             >
               {$t("component.login.guest_login")}

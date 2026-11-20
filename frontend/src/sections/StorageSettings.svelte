@@ -136,8 +136,8 @@
   };
 </script>
 
-<section class="bg-gray-50 shadow rounded-lg p-4 md:p-8 mt-6" aria-labelledby="external-storage-title">
-  <h2 id="external-storage-title" class="text-xl font-bold text-gray-700 mb-3">{label("title")}</h2>
+<section class="bg-gray-50 dark:bg-gray-800 shadow rounded-lg p-4 md:p-8 mt-6" aria-labelledby="external-storage-title">
+  <h2 id="external-storage-title" class="text-xl font-bold text-gray-700 dark:text-gray-200 mb-3">{label("title")}</h2>
   <p class="text-sm mb-4">{label("intro")}</p>
   {#if loading}
     <p role="status">{label("loading")}</p>
@@ -162,25 +162,25 @@
               {#each config.providers as provider}<option value={provider.id}>{provider.name || label("unnamed")}</option>{/each}
             </select>
           {/if}
-          <h3 class="font-bold text-gray-700 mb-2">{label("storage_list")}</h3>
+          <h3 class="font-bold text-gray-700 dark:text-gray-200 mb-2">{label("storage_list")}</h3>
           <p class="text-sm mb-3">{label("list_help")}</p>
           {#if !config.providers.length}
-            <p class="text-sm text-gray-600 border rounded p-4 mb-4">{label("empty_list")}</p>
+            <p class="text-sm text-gray-600 dark:text-gray-300 border rounded p-4 mb-4">{label("empty_list")}</p>
           {:else}
             <ul class="mb-4 divide-y border rounded" aria-label={label("storage_list")}>
               {#each config.providers as provider (provider.id)}
                 <li class="flex flex-wrap items-center justify-between gap-3 p-3">
                   <div class="min-w-0">
                     <p class="font-bold break-words">{provider.name || label("unnamed")}</p>
-                    <p class="text-sm text-gray-600">
+                    <p class="text-sm text-gray-600 dark:text-gray-300">
                       {protocolName(provider.protocol)} · {label(provider.encryption ? "encrypted" : "unencrypted")}
-                      {#if isUnsaved(provider)}<span class="text-yellow-800"> · {label("unsaved")}</span>{/if}
+                      {#if isUnsaved(provider)}<span class="text-yellow-800 dark:text-yellow-200"> · {label("unsaved")}</span>{/if}
                     </p>
                   </div>
                   <div class="flex gap-3">
-                    <button type="button" class="text-blue-700 underline" aria-expanded={activeProvider === provider.id}
+                    <button type="button" class="text-blue-700 dark:text-blue-300 underline" aria-expanded={activeProvider === provider.id}
                       aria-controls={`storage-editor-${provider.id}`} on:click={() => editProvider(provider.id)}>{label("edit")}</button>
-                    <button type="button" class="text-red-700 underline" on:click={() => removeProvider(provider.id)}>{label("remove")}</button>
+                    <button type="button" class="text-red-700 dark:text-red-400 underline" on:click={() => removeProvider(provider.id)}>{label("remove")}</button>
                   </div>
                 </li>
               {/each}
@@ -236,10 +236,10 @@
                 <label class="block mt-3"><input type="checkbox" bind:checked={provider.implicit_tls} /> {label("implicit_tls")}</label>
               {/if}
               {#if provider.protocol === "ftp"}
-                <p role="alert" class="text-yellow-800 bg-yellow-100 rounded p-3 mt-3">{label("ftp_warning")}</p>
+                <p role="alert" class="text-yellow-800 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900 rounded p-3 mt-3">{label("ftp_warning")}</p>
               {/if}
               {#if (provider.protocol === "s3" || provider.protocol === "webdav") && provider.endpoint.startsWith("http://")}
-                <p role="alert" class="text-yellow-800 bg-yellow-100 rounded p-3 mt-3">{label("http_warning")}</p>
+                <p role="alert" class="text-yellow-800 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900 rounded p-3 mt-3">{label("http_warning")}</p>
               {/if}
               <label class="block mt-4"><input type="checkbox" bind:checked={provider.encryption} /> {label("encryption")}</label>
               {#if provider.encryption}
@@ -249,7 +249,7 @@
                     bind:value={provider.encryption_key} class="block w-full border rounded p-2" />
                 </label>
                 <p class="text-sm mt-2">{label("key_help")}</p>
-                <p role="alert" class="text-yellow-800 bg-yellow-100 rounded p-3 mt-2">{label("key_warning")}</p>
+                <p role="alert" class="text-yellow-800 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900 rounded p-3 mt-2">{label("key_warning")}</p>
               {/if}
               <button type="button" class="mt-4 underline" on:click={() => activeProvider = ""}>{label("close_editor")}</button>
             </fieldset>
@@ -260,11 +260,11 @@
           {#if config.enabled}
             <button type="button" class="border rounded px-3 py-2" disabled={!config.providers.length} on:click={() => save(true)}>{label("test")}</button>
           {/if}
-          <button type="submit" class="bg-blue-400 text-white rounded px-3 py-2">{busy ? label("working") : label("save")}</button>
+          <button type="submit" class="bg-blue-400 dark:bg-blue-600 text-white rounded px-3 py-2">{busy ? label("working") : label("save")}</button>
         </div>
       </fieldset>
     </form>
   {/if}
-  {#if error}<p role="alert" class="text-red-700 mt-4 break-words">{error}</p>{/if}
-  {#if message}<p role="status" class="text-green-700 mt-4">{message}</p>{/if}
+  {#if error}<p role="alert" class="text-red-700 dark:text-red-400 mt-4 break-words">{error}</p>{/if}
+  {#if message}<p role="status" class="text-green-700 dark:text-green-400 mt-4">{message}</p>{/if}
 </section>

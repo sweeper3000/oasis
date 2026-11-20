@@ -108,7 +108,7 @@
       <div class="mt-4">
         {$t("modal.copy_move.text3")}
       </div>
-      <select bind:value={overwrite} class="w-20 px-2 border bg-gray-50">
+      <select bind:value={overwrite} class="w-20 px-2 border bg-gray-50 dark:bg-gray-800">
         <option>{$t("modal.copy_move.no")}</option>
         <option>{$t("modal.copy_move.yes")}</option>
       </select>
@@ -149,7 +149,7 @@
       <div role="status" aria-live="polite" class="mt-2">
         {$t(`modal.copy_move.phases.${phase}`)}
       </div>
-      {#if currentFile}<div class="text-sm text-gray-600 break-all mt-1">{currentFile}</div>{/if}
+      {#if currentFile}<div class="text-sm text-gray-600 dark:text-gray-300 break-all mt-1">{currentFile}</div>{/if}
       {#if done}
         <div class="mt-4">{$t("modal.copy_move.done_text")}</div>
       {:else if error}

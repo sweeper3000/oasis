@@ -41,7 +41,7 @@
   <Spinner />
 {:else}
   <div
-    class="p-2 viewer-height overflow-y-auto border-2 border-gray-500 shadow"
+    class="p-2 viewer-height overflow-y-auto border-2 border-gray-500 dark:border-gray-500 shadow"
   >
     {#if fileType === EFileType.Text}
       <pre class="text-lg">

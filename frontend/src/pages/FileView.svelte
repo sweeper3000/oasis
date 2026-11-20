@@ -267,7 +267,7 @@
           {/if}
         </div>
         <div class="flex flex-col w-full lg:w-1/4 lg:pl-8 mt-4 lg:mt-0">
-          <div class="bg-gray-100 rounded-lg">
+          <div class="bg-gray-100 dark:bg-gray-700 rounded-lg">
             <div
               class="flex flex-row items-center justify-between px-2 py-1 mb-2 border-b"
             >
@@ -289,14 +289,14 @@
             <div class="filelist-height overflow-y-auto flex-grow px-1">
               {#each siblings as sibling, i}
                 {#if filename === sibling.filename}
-                  <div class="bg-blue-400 text-white rounded mb-1">
+                  <div class="bg-blue-400 dark:bg-blue-600 text-white rounded mb-1">
                     <span class="px-2 py-1 break-all">
                       {sibling.filename}
                     </span>
                   </div>
                 {:else}
                   <div
-                    class="rounded cursor-pointer hover:bg-blue-400 hover:text-white mb-1"
+                    class="rounded cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white mb-1"
                     on:click={() => selectSibling(i)}
                   >
                     <span class="px-2 py-1">

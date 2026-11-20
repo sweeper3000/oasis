@@ -56,7 +56,7 @@
         <a
           href={repo.url}
           target="_blank"
-          class="px-1 ml-2 rounded-sm hover:bg-blue-400 hover:text-white break-all"
+          class="px-1 ml-2 rounded-sm hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white break-all"
         >
           {repo.name}
         </a>
@@ -68,7 +68,7 @@
         <a
           href={link.url}
           target="_blank"
-          class="px-1 rounded-sm hover:bg-blue-400 hover:text-white"
+          class="px-1 rounded-sm hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
           >{link.name}</a
         >
         |{" "}

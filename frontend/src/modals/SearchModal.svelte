@@ -175,7 +175,7 @@
         onClick={() => (keyword = null)}
       />
       <div
-        class="border rounded ml-1 px-1 cursor-pointer hover:bg-blue-400 hover:text-white"
+        class="border rounded ml-1 px-1 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
         on:click={onClose}
       >
         esc
@@ -190,7 +190,7 @@
       <div class="mb-2 flex flex-row justify-between items-center">
         <div><b>{$t("modal.search_file.recent")}</b></div>
         <div
-          class="rounded px-2 cursor-pointer hover:bg-blue-400 hover:text-white"
+          class="rounded px-2 cursor-pointer hover:bg-blue-400 dark:hover:bg-blue-600 hover:text-white"
           on:click={clearAllKeywordsFromHistory}
         >
           {$t("modal.search_file.clear_all")}
@@ -198,7 +198,7 @@
       </div>
       {#each historyKeywords as keyword}
         <div
-          class="flex flex-row justify-between items-center hover:bg-gray-200 cursor-pointer p-2 rounded"
+          class="flex flex-row justify-between items-center hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer p-2 rounded"
           on:click={() => chooseHistoryKeyword(keyword)}
         >
           {keyword}
@@ -224,12 +224,12 @@
       </div>
       {#each searchResults as result}
         <div
-          class="grid grid-cols-3 p-2 lg:p-4 bg-white text-lg hover:bg-gray-200 cursor-pointer"
+          class="grid grid-cols-3 p-2 lg:p-4 bg-white dark:bg-gray-800 text-lg hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer"
           on:click={() => selectFile(result)}
         >
           <div class="col-span-3 lg:col-span-1 px-2 flex flex-row items-center">
             <FileIcon file={result} />
-            <div class="ml-2 text-black break-all overflow-ellipsis">
+            <div class="ml-2 text-black dark:text-gray-100 break-all overflow-ellipsis">
               {result.filename}
             </div>
           </div>

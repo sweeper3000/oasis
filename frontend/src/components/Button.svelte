@@ -27,19 +27,19 @@
 
     switch (color) {
       case "blue":
-        style += " bg-blue-400 hover:bg-blue-500 text-white";
+        style += " bg-blue-400 dark:bg-blue-600 hover:bg-blue-500 dark:hover:bg-blue-700 text-white";
         break;
       case "white":
-        style += " bg-white hover:bg-gray-200 text-black";
+        style += " bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-600 text-black dark:text-gray-100";
         break;
       case "gray":
-        style += " bg-gray-100 hover:bg-blue-200";
+        style += " bg-gray-100 dark:bg-gray-700 hover:bg-blue-200 dark:hover:bg-blue-800";
         break;
       case "white":
-        style += " border-gray-500";
+        style += " border-gray-500 dark:border-gray-500";
         break;
       case "green":
-        style += " bg-green-400 text-white";
+        style += " bg-green-400 dark:bg-green-700 text-white";
         break;
       default:
         break;

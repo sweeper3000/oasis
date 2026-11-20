@@ -118,14 +118,14 @@
 {#if showSearchModal}
   <SearchModal onClose={closeSearchModal} />
 {/if}
-<div class="w-full h-14 bg-gray-50 shadow">
+<div class="w-full h-14 bg-gray-50 dark:bg-gray-800 shadow">
   <div
     class="w-11/12 lg:w-4/5 h-full flex flex-row justify-between items-center mx-auto"
   >
     <Title {sitename} {section} />
     {#if section === "files" || section === "settings" || section === "profile"}
       <div
-        class="flex flex-row w-40 lg:w-96 items-center border-b pb-1 border-gray-300 cursor-pointer"
+        class="flex flex-row w-40 lg:w-96 items-center border-b pb-1 border-gray-300 dark:border-gray-600 cursor-pointer"
         on:click={() => openModal("search")}
       >
         <Icon type={EIconType.search} size="tiny" color={EIconColor.gray} />

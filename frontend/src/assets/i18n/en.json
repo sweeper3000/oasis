@@ -175,6 +175,14 @@
     "setup": {
       "title": "Site setup"
     },
+    "appearance": {
+      "title": "Appearance",
+      "theme": "Theme",
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System",
+      "help": "Applies to this browser and saves automatically."
+    },
     "settings": {
       "title": "Site settings",
       "version": "Version",

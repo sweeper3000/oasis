@@ -83,9 +83,9 @@
 <div class="relative container-height w-full">
   <form on:submit={onConfirm} bind:this={form}>
     <div
-      class="w-100 mx-auto center bg-gray-50 shadow rounded-lg flex flex-col items-center p-2 md:p-8"
+      class="w-100 mx-auto center bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-2 md:p-8"
     >
-      <div class="text-xl font-bold mb-8 text-gray-700">
+      <div class="text-xl font-bold mb-8 text-gray-700 dark:text-gray-200">
         {$t("component.profile.title")}
       </div>
       <div class="w-full grid grid-cols-3 mb-4">

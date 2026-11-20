@@ -130,8 +130,8 @@
   });
 </script>
 
-<section class="bg-gray-50 shadow rounded-lg p-4 md:p-8 mt-6" aria-labelledby="database-title">
-  <h2 id="database-title" class="text-xl font-bold text-gray-700 mb-3">{label("title")}</h2>
+<section class="bg-gray-50 dark:bg-gray-800 shadow rounded-lg p-4 md:p-8 mt-6" aria-labelledby="database-title">
+  <h2 id="database-title" class="text-xl font-bold text-gray-700 dark:text-gray-200 mb-3">{label("title")}</h2>
   <p class="text-sm mb-4">{label("intro")}</p>
   {#if step === "idle"}
     <div class="flex flex-wrap gap-3">
@@ -149,14 +149,14 @@
     <h3 class="font-bold mb-2">{label("recovery_phrase")}</h3>
     <p class="text-sm mb-3">{label("phrase_help")}</p>
     <ol class="grid grid-cols-2 md:grid-cols-3 gap-2 mb-4" aria-label={label("recovery_phrase")}>
-      {#each phrase.split(" ") as word, index}<li class="border rounded p-2"><span class="text-gray-500 mr-2">{index + 1}.</span>{word}</li>{/each}
+      {#each phrase.split(" ") as word, index}<li class="border rounded p-2"><span class="text-gray-500 dark:text-gray-400 mr-2">{index + 1}.</span>{word}</li>{/each}
     </ol>
     <div class="flex flex-wrap gap-3 mb-3">
       <button type="button" class="border rounded px-3 py-2" on:click={copyPhrase}>{label("copy")}</button>
       <button type="button" class="border rounded px-3 py-2" on:click={downloadPhrase}>{label("download_phrase")}</button>
     </div>
     {#if manualCopy}<textarea readonly aria-label={label("recovery_phrase")} value={phrase} class="w-full border rounded p-2 mb-3" />{/if}
-    <button type="button" class="bg-blue-400 text-white rounded px-3 py-2" on:click={confirmPhrase}>{label("recorded")}</button>
+    <button type="button" class="bg-blue-400 dark:bg-blue-600 text-white rounded px-3 py-2" on:click={confirmPhrase}>{label("recorded")}</button>
   {:else if step === "challenge"}
     <p class="text-sm mb-3">{label("challenge_help")}</p>
     <form on:submit|preventDefault={exportBackup}>
@@ -168,7 +168,7 @@
             </label>
           {/each}
         </div>
-        <button class="bg-blue-400 text-white rounded px-3 py-2">{busy ? label("working") : label("download_backup")}</button>
+        <button class="bg-blue-400 dark:bg-blue-600 text-white rounded px-3 py-2">{busy ? label("working") : label("download_backup")}</button>
       </fieldset>
     </form>
   {:else if step === "import"}
@@ -196,7 +196,7 @@
       <dt>{label("source_storage")}</dt><dd class="break-words">{preview.source_storage}</dd>
     </dl>
     <p class="text-sm mb-3">{label("migration_help")}</p>
-    <p role="alert" class="text-yellow-800 bg-yellow-100 rounded p-3 mb-4">{label("replace_warning")}</p>
+    <p role="alert" class="text-yellow-800 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900 rounded p-3 mb-4">{label("replace_warning")}</p>
     <form on:submit|preventDefault={restoreBackup}>
       <fieldset disabled={busy}>
         <label class="block mb-3">{label("local_storage")}
@@ -212,7 +212,7 @@
     </form>
   {/if}
   {#if step !== "idle"}<button type="button" disabled={restoring} class="underline mt-4" on:click={cancel}>{label("cancel")}</button>{/if}
-  {#if error}<p role="alert" class="text-red-700 mt-4 break-words">{error}</p>{/if}
-  {#if message}<p role="status" class="text-green-700 mt-4">{message}</p>{/if}
+  {#if error}<p role="alert" class="text-red-700 dark:text-red-400 mt-4 break-words">{error}</p>{/if}
+  {#if message}<p role="status" class="text-green-700 dark:text-green-400 mt-4">{message}</p>{/if}
 </section>
 {#if browse}<DirBrowser onClose={() => browse = false} onSelect={(path) => { localStorage = path; browse = false; }} />{/if}

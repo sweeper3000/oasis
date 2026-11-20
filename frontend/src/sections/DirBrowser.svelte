@@ -135,20 +135,20 @@
 
 <div class="fixed z-10 left-0 top-0 w-full min-h-full bg-black bg-opacity-40">
   <div
-    class="bg-white w-96 mt-20 mx-auto p-4 border rounded-lg border-gray-50 flex flex-col"
+    class="bg-white dark:bg-gray-800 w-96 mt-20 mx-auto p-4 border rounded-lg border-gray-50 dark:border-gray-700 flex flex-col"
   >
-    <div class="mb-4 text-xl mx-auto text-gray-700">
+    <div class="mb-4 text-xl mx-auto text-gray-700 dark:text-gray-200">
       {$t("component.dir_browser.title")}
     </div>
     <!-- Volume selector -->
     <div class="mb-4 flex flex-row items-center">
       {#if mode === "storage" || root}
         <span class="mr-4">{$t("component.dir_browser.root_dir")}</span>
-        <span class="text-gray-700 font-bold break-words mb-2">{mode === "storage" ? "/" : root}</span>
+        <span class="text-gray-700 dark:text-gray-200 font-bold break-words mb-2">{mode === "storage" ? "/" : root}</span>
       {:else}
         <span class="mr-4">{$t("component.dir_browser.volumes")}:</span>
         <select
-          class="px-2 border bg-gray-50 max-w-10"
+          class="px-2 border bg-gray-50 dark:bg-gray-800 max-w-10"
           on:change={selectVolume}
           on:blur
         >
@@ -164,7 +164,7 @@
 
     <!-- Selected directory -->
     <div class="mt-2">{$t("component.dir_browser.selected_dir")}:</div>
-    <div class="text-gray-700 font-bold break-words mb-2">{mode === "storage" ? "/" + currentDir : currentDir}</div>
+    <div class="text-gray-700 dark:text-gray-200 font-bold break-words mb-2">{mode === "storage" ? "/" + currentDir : currentDir}</div>
 
     <!-- Sub directory list -->
     <div
@@ -173,10 +173,10 @@
       {#if isLoading}
         <Spinner />
       {:else}
-        {#if failed}<p role="alert" class="mx-2 text-red-700">{$t("message.error.read_dir_error")}</p>{/if}
+        {#if failed}<p role="alert" class="mx-2 text-red-700 dark:text-red-400">{$t("message.error.read_dir_error")}</p>{/if}
         {#if path && path.length > 0}
           <button type="button"
-            class="block text-left mx-2 px-2 rounded hover:bg-gray-200 cursor-pointer break-words"
+            class="block text-left mx-2 px-2 rounded hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer break-words"
             on:click={goToParentDir}
           >
             ..
@@ -185,7 +185,7 @@
 
         {#each sub_dirs as dir}
           <button type="button"
-            class="block text-left mx-2 px-2 rounded hover:bg-gray-200 cursor-pointer break-words"
+            class="block text-left mx-2 px-2 rounded hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer break-words"
             on:click={() => selectDir(dir)}
           >
             {dir}

@@ -175,6 +175,14 @@
     "setup": {
       "title": "网站设置"
     },
+    "appearance": {
+      "title": "外观",
+      "theme": "主题",
+      "light": "浅色",
+      "dark": "深色",
+      "system": "跟随系统",
+      "help": "仅应用于此浏览器，更改会自动保存。"
+    },
     "settings": {
       "title": "网站设置",
       "version": "版本",

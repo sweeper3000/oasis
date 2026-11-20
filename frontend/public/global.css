@@ -50,3 +50,51 @@ input:disabled {
     height: 80vh;
   }
 }
+/* Shared page, native-control, and icon colors. Component surfaces use dark variants. */
+:root {
+  color-scheme: light;
+  --oa-background: #fff;
+  --oa-foreground: #6b7280;
+  --oa-border: #e5e7eb;
+  --oa-control: #fff;
+  --oa-icon-foreground: #000;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --oa-background: #111827;
+  --oa-foreground: #d1d5db;
+  --oa-border: #4b5563;
+  --oa-control: #1f2937;
+  --oa-icon-foreground: #f3f4f6;
+}
+
+html, body {
+  background-color: var(--oa-background);
+  color: var(--oa-foreground);
+}
+
+.dark *, .dark ::before, .dark ::after {
+  border-color: var(--oa-border);
+}
+
+.dark input:not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.dark select, .dark textarea {
+  background-color: var(--oa-control);
+  color: var(--oa-foreground);
+}
+
+.dark input::placeholder, .dark textarea::placeholder {
+  color: #9ca3af;
+  opacity: 1;
+}
+
+.dark :focus-visible:not(:disabled) {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.dark button:disabled, .dark input:disabled,
+.dark select:disabled, .dark textarea:disabled {
+  opacity: 0.6;
+}

@@ -4,6 +4,7 @@
   import { useNavigate, useFocus } from "svelte-navigator";
   import Spinner from "../components/Spinner.svelte";
   import Button from "../components/Button.svelte";
+  import { themePreference } from "../utils/theme";
   import StorageSettings from "../sections/StorageSettings.svelte";
   import DatabaseSettings from "../sections/DatabaseSettings.svelte";
   import DirBrowser from "../sections/DirBrowser.svelte";
@@ -157,11 +158,21 @@
       }}
     />
   {/if}
+  <section class="bg-gray-50 dark:bg-gray-800 shadow rounded-lg p-4 md:p-8 mb-6" aria-labelledby="appearance-title">
+    <h2 id="appearance-title" class="text-xl font-bold text-gray-700 dark:text-gray-200 mb-4">{$t("component.appearance.title")}</h2>
+    <label for="appearance-theme" class="mr-3">{$t("component.appearance.theme")}</label>
+    <select id="appearance-theme" class="border rounded px-2 py-1 bg-white dark:bg-gray-700" bind:value={$themePreference} aria-describedby="appearance-help">
+      <option value="light">{$t("component.appearance.light")}</option>
+      <option value="dark">{$t("component.appearance.dark")}</option>
+      <option value="system">{$t("component.appearance.system")}</option>
+    </select>
+    <p id="appearance-help" class="text-sm mt-2">{$t("component.appearance.help")}</p>
+  </section>
   <form on:submit={onConfirm} bind:this={form}>
     <div
-      class="panel-width mx-auto bg-gray-50 shadow rounded-lg flex flex-col items-center p-2 md:p-8"
+      class="panel-width mx-auto bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-2 md:p-8"
     >
-      <div class="text-xl font-bold mb-8 text-gray-700">
+      <div class="text-xl font-bold mb-8 text-gray-700 dark:text-gray-200">
         {$t("component.settings.title")}
       </div>
 
@@ -171,7 +182,7 @@
         <div class="col-span-3">
           <!-- svelte-ignore a11y-no-onchange -->
           <select
-            class="ml-2 px-2 border bg-gray-50"
+            class="ml-2 px-2 border bg-gray-50 dark:bg-gray-800"
             on:change={setLang}
             use:focus
           >
@@ -200,7 +211,7 @@
         <div>{$t("component.settings.update")}:</div>
         <div class="col-span-3">
           <!-- svelte-ignore a11y-no-onchange -->
-          <select class="ml-2 px-2 border bg-gray-50" on:change={setUpdateFreq}>
+          <select class="ml-2 px-2 border bg-gray-50 dark:bg-gray-800" on:change={setUpdateFreq}>
             <option value="daily" selected={update_freq === "daily"}
               >{$t("component.settings.daily")}</option
             >

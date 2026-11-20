@@ -91,7 +91,7 @@
 {:else}
   {#if page === "dir" && dirs && dirs.length > 0}
     <div
-      class="grid grid-cols-5 border-b border-gray-200 py-2 hover:bg-gray-200 cursor-pointer"
+      class="grid grid-cols-5 border-b border-gray-200 py-2 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer"
       on:click={backToParentDir}
     >
       <div class="col-span-3 px-2">..</div>
@@ -102,7 +102,7 @@
   {/if}
   {#each files as file}
     <div
-      class="grid grid-cols-5 border-b border-gray-200 py-2 hover:bg-gray-200 cursor-pointer"
+      class="grid grid-cols-5 border-b border-gray-200 py-2 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer"
       on:contextmenu|preventDefault={(e) => onOpenContextMenu(e, file)}
       on:click={() => selectFile(file)}
     >

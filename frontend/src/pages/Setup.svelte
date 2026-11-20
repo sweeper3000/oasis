@@ -114,16 +114,16 @@
     {/if}
     <form on:submit={onConfirm} bind:this={form}>
       <div
-        class="w-96 mx-auto center bg-gray-50 shadow rounded-lg flex flex-col items-center p-8"
+        class="w-96 mx-auto center bg-gray-50 dark:bg-gray-800 shadow rounded-lg flex flex-col items-center p-8"
       >
-        <div class="text-xl font-bold mb-8 text-gray-700">
+        <div class="text-xl font-bold mb-8 text-gray-700 dark:text-gray-200">
           {$t("component.setup.title")}
         </div>
         <div class="w-full grid grid-cols-4 mb-4">
           <div>{$t("form.language")}:</div>
           <div class="col-span-3">
             <!-- svelte-ignore a11y-no-onchange -->
-            <select class="ml-2 px-2 border bg-gray-50" on:change={setLang}>
+            <select class="ml-2 px-2 border bg-gray-50 dark:bg-gray-800" on:change={setLang}>
               <option value="en" selected={language === "en"}>English</option>
               <option value="cn" selected={language === "cn"}>中文</option>
             </select>

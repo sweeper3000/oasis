@@ -69,7 +69,7 @@
       case "pink":
         return "#F472B6";
       default:
-        return color;
+        return color === "black" ? "var(--oa-icon-foreground)" : color;
     }
   };
 
@@ -181,7 +181,7 @@
     fill: #9ca3af;
   }
   .fill-black {
-    fill: black;
+    fill: var(--oa-icon-foreground);
   }
   .fill-white {
     fill: white;

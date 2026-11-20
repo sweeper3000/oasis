@@ -13,16 +13,16 @@
 </script>
 
 <div
-  class="fixed top-0 left-0 z-40 w-screen h-screen bg-gray-400 bg-opacity-40"
+  class="fixed top-0 left-0 z-40 w-screen h-screen bg-gray-400 dark:bg-gray-600 bg-opacity-40"
   on:click={clickOutToClose ? onClose : () => {}}
 >
   <div
-    class="modal-{size} center flex flex-col bg-white border-gray-400 shadow"
+    class="modal-{size} center flex flex-col bg-white dark:bg-gray-800 border-gray-400 dark:border-gray-600 shadow"
     on:click={clickInside}
   >
     {#if showTitle}
       <div class="border-b border-gray-200 p-4 flex flex-row justify-between">
-        <div class="text-lg text-black">{title}</div>
+        <div class="text-lg text-black dark:text-gray-100">{title}</div>
         <Icon
           type={EIconType.close}
           color={EIconColor.gray}

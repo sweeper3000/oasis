@@ -371,16 +371,16 @@
           />
           {#if showNewMenu}
             <div
-              class="absolute w-32 top-9 right-0 py-1 shadow-sm rounded-sm bg-white border"
+              class="absolute w-32 top-9 right-0 py-1 shadow-sm rounded-sm bg-white dark:bg-gray-800 border"
             >
               <div
-                class="px-2 py-1 hover:bg-gray-400 hover:text-white cursor-pointer text-center"
+                class="px-2 py-1 hover:bg-gray-400 dark:hover:bg-gray-600 hover:text-white cursor-pointer text-center"
                 on:click={openNewFilenameModal}
               >
                 {$t("component.dir_list.create_folder")}
               </div>
               <div
-                class="px-2 py-1 hover:bg-gray-400 hover:text-white cursor-pointer text-center"
+                class="px-2 py-1 hover:bg-gray-400 dark:hover:bg-gray-600 hover:text-white cursor-pointer text-center"
                 on:click={openSelectFileDialog}
               >
                 {$t("component.dir_list.upload_files")}

@@ -4,7 +4,7 @@ module.exports = {
     mode: 'all',
     content: ['./public/index.html', './src/**/*.svelte'],
   },
-  darkMode: false, // or 'media' or 'class'
+  darkMode: 'class',
   theme: {
     extend: {},
   },
